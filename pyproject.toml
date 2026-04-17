@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cloudbridge"
+version = "0.1.0"
+description = "Core runtime for hybrid cloud file management on Linux."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "aiohttp>=3.11,<4.0",
+  "aiosqlite>=0.20,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.25,<1.0",
+]
+
+[project.scripts]
+cloudbridge = "cloudbridge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cloudbridge"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+

@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from cloudbridge.config import AppConfig
+from cloudbridge.hybrid import HybridManager
+from cloudbridge.models import EntryKind, RemoteEntry, SyncState
+from cloudbridge.paths import normalize_virtual_path, parent_path
+from cloudbridge.providers.base import CloudProvider
+from cloudbridge.state import StateDB
+
+
+class MemoryProvider(CloudProvider):
+    name = "memory"
+
+    def __init__(self) -> None:
+        self._entries: dict[str, RemoteEntry] = {
+            "/remote": RemoteEntry(path="/remote", name="remote", parent_path="/", kind=EntryKind.DIRECTORY),
+            "/remote/file.txt": RemoteEntry(
+                path="/remote/file.txt",
+                name="file.txt",
+                parent_path="/remote",
+                kind=EntryKind.FILE,
+                size=3,
+            ),
+        }
+        self._content: dict[str, bytes] = {"/remote/file.txt": b"abc"}
+
+    async def list_directory(self, path: str) -> list[RemoteEntry]:
+        normalized = normalize_virtual_path(path)
+        return [entry for entry in self._entries.values() if entry.parent_path == normalized]
+
+    async def stat(self, path: str) -> RemoteEntry | None:
+        normalized = normalize_virtual_path(path)
+        if normalized == "/":
+            return RemoteEntry(path="/", name="", parent_path="/", kind=EntryKind.DIRECTORY)
+        return self._entries.get(normalized)
+
+    async def ensure_directory(self, path: str) -> None:
+        normalized = normalize_virtual_path(path)
+        if normalized == "/":
+            return
+        current = ""
+        for segment in normalized.strip("/").split("/"):
+            current = f"{current}/{segment}" if current else f"/{segment}"
+            self._entries.setdefault(
+                current,
+                RemoteEntry(path=current, name=current.rsplit("/", 1)[-1], parent_path=parent_path(current), kind=EntryKind.DIRECTORY),
+            )
+
+    async def upload_file(self, local_path: str, remote_path: str, overwrite: bool = True) -> RemoteEntry:
+        await self.ensure_directory(parent_path(remote_path))
+        data = Path(local_path).read_bytes()
+        normalized = normalize_virtual_path(remote_path)
+        entry = RemoteEntry(path=normalized, name=Path(local_path).name, parent_path=parent_path(normalized), kind=EntryKind.FILE, size=len(data))
+        self._entries[normalized] = entry
+        self._content[normalized] = data
+        return entry
+
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(local_path).write_bytes(self._content[normalize_virtual_path(remote_path)])
+
+    async def delete(self, path: str, permanently: bool = True) -> None:
+        normalized = normalize_virtual_path(path)
+        prefixes = [item for item in self._entries if item == normalized or item.startswith(f"{normalized}/")]
+        for prefix in prefixes:
+            self._entries.pop(prefix, None)
+            self._content.pop(prefix, None)
+
+    async def move(self, source_path: str, target_path: str, overwrite: bool = True) -> None:
+        normalized_source = normalize_virtual_path(source_path)
+        normalized_target = normalize_virtual_path(target_path)
+        entry = self._entries.pop(normalized_source)
+        moved = RemoteEntry(
+            path=normalized_target,
+            name=normalized_target.rsplit("/", 1)[-1],
+            parent_path=parent_path(normalized_target),
+            kind=entry.kind,
+            size=entry.size,
+        )
+        self._entries[normalized_target] = moved
+        if normalized_source in self._content:
+            self._content[normalized_target] = self._content.pop(normalized_source)
+
+    async def publish(self, path: str) -> str:
+        return f"https://example.test{normalize_virtual_path(path)}"
+
+
+@pytest.mark.asyncio
+async def test_discover_merges_remote_and_local_views(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+    )
+    config.ensure_directories()
+    (config.sync_root / "draft.txt").write_text("draft", encoding="utf-8")
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    manager = HybridManager(config, state, MemoryProvider())
+    try:
+        await manager.discover()
+        root_entries = await manager.list_directory("/")
+        by_path = {entry.path: entry for entry in root_entries}
+        assert by_path["/remote"].sync_state is SyncState.SYNCED
+        assert by_path["/draft.txt"].sync_state is SyncState.LOCAL_ONLY
+
+        remote_entries = await manager.list_directory("/remote")
+        assert remote_entries[0].path == "/remote/file.txt"
+        assert remote_entries[0].sync_state is SyncState.PLACEHOLDER
+    finally:
+        await manager.close()

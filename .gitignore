@@ -1,0 +1,13 @@
+.venv/
+.uv-cache/
+.uv-python/
+.tooling/
+.npm-cache/
+.tmp/
+__pycache__/
+.pytest_cache/
+*.pyc
+dist/
+build/
+pytest-cache-files-*/
+tmp*/
