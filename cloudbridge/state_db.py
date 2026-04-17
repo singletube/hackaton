@@ -43,6 +43,7 @@ class StateDB:
                 status TEXT NOT NULL,
                 local_exists INTEGER NOT NULL DEFAULT 0,
                 cloud_exists INTEGER NOT NULL DEFAULT 0,
+                placeholder INTEGER NOT NULL DEFAULT 0,
                 pinned INTEGER NOT NULL DEFAULT 0,
                 modified_at TEXT,
                 error TEXT,
@@ -50,6 +51,11 @@ class StateDB:
             )
             """
         )
+        columns = await self._get_columns(conn, "files")
+        if "placeholder" not in columns:
+            await conn.execute(
+                "ALTER TABLE files ADD COLUMN placeholder INTEGER NOT NULL DEFAULT 0"
+            )
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_files_status
@@ -144,6 +150,7 @@ class StateDB:
                     ELSE files.status
                 END,
                 local_exists = 1,
+                placeholder = 0,
                 modified_at = COALESCE(excluded.modified_at, files.modified_at),
                 updated_at = excluded.updated_at
             """,
@@ -216,20 +223,22 @@ class StateDB:
         kind: str,
         status: FileStatus,
         exists: bool,
+        placeholder: bool = False,
     ) -> None:
         now = _utc_now()
         conn = self._require_conn()
         await conn.execute(
             """
             INSERT INTO files(
-                path, name, kind, status, local_exists, updated_at
+                path, name, kind, status, local_exists, placeholder, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 name = excluded.name,
                 kind = excluded.kind,
                 status = excluded.status,
                 local_exists = excluded.local_exists,
+                placeholder = excluded.placeholder,
                 updated_at = excluded.updated_at
             """,
             (
@@ -238,6 +247,7 @@ class StateDB:
                 kind,
                 status.value,
                 1 if exists else 0,
+                1 if placeholder else 0,
                 now,
             ),
         )
@@ -267,6 +277,7 @@ class StateDB:
         *,
         local_exists: Optional[bool] = None,
         cloud_exists: Optional[bool] = None,
+        placeholder: Optional[bool] = None,
     ) -> None:
         conn = self._require_conn()
         clauses: list[str] = []
@@ -277,6 +288,9 @@ class StateDB:
         if cloud_exists is not None:
             clauses.append("cloud_exists = ?")
             values.append(1 if cloud_exists else 0)
+        if placeholder is not None:
+            clauses.append("placeholder = ?")
+            values.append(1 if placeholder else 0)
         if not clauses:
             return
         clauses.append("updated_at = ?")
@@ -315,6 +329,14 @@ class StateDB:
         cursor = await conn.execute("SELECT * FROM files WHERE pinned = 1")
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def list_placeholder_paths(self) -> set[str]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT path FROM files WHERE placeholder = 1 ORDER BY path ASC"
+        )
+        rows = await cursor.fetchall()
+        return {str(row["path"]) for row in rows}
 
     async def set_pinned(self, path: str, pinned: bool) -> None:
         conn = self._require_conn()
@@ -362,3 +384,9 @@ class StateDB:
         if self._conn is None:
             raise RuntimeError("StateDB is not connected")
         return self._conn
+
+    @staticmethod
+    async def _get_columns(conn: aiosqlite.Connection, table_name: str) -> set[str]:
+        cursor = await conn.execute(f"PRAGMA table_info({table_name})")
+        rows = await cursor.fetchall()
+        return {str(row[1]) for row in rows}

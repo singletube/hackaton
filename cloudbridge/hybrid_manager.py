@@ -39,12 +39,16 @@ class HybridManager:
         recursive: bool = True,
         max_depth: int = -1,
     ) -> DiscoverStats:
+        known_placeholder_paths = await self._state_db.list_placeholder_paths()
         cloud_entries = await self._discover_cloud_entries(
             cloud_root=cloud_root,
             recursive=recursive,
             max_depth=max_depth,
         )
-        local_entries = await asyncio.to_thread(self._scan_local_entries)
+        local_entries = await asyncio.to_thread(
+            self._scan_local_entries,
+            known_placeholder_paths,
+        )
 
         cloud_count = await self._state_db.upsert_cloud_entries(cloud_entries)
         local_count = await self._state_db.upsert_local_entries(local_entries)
@@ -53,6 +57,8 @@ class HybridManager:
                 cloud_paths={entry.path for entry in cloud_entries if entry.path},
                 local_paths={entry.path for entry in local_entries if entry.path},
             )
+
+        await self._materialize_placeholders()
 
         merged_count = await self._state_db.count_present()
 
@@ -102,7 +108,7 @@ class HybridManager:
 
         return result
 
-    def _scan_local_entries(self) -> list[LocalEntry]:
+    def _scan_local_entries(self, placeholder_paths: set[str]) -> list[LocalEntry]:
         records: list[LocalEntry] = []
         for path in self._local_root.rglob("*"):
             rel_parts = path.relative_to(self._local_root).parts
@@ -110,6 +116,8 @@ class HybridManager:
                 continue
             rel = "/".join(rel_parts)
             if not rel:
+                continue
+            if self._is_placeholder_path(path, rel, placeholder_paths):
                 continue
             if path.is_dir():
                 kind = FileKind.DIRECTORY
@@ -136,6 +144,101 @@ class HybridManager:
                 )
             )
         return records
+
+    async def _materialize_placeholders(self) -> None:
+        rows = await self._state_db.list_all(include_deleted=True)
+        desired = {
+            str(row["path"])
+            for row in rows
+            if str(row["path"])
+            and bool(row["cloud_exists"])
+            and not bool(row["local_exists"])
+        }
+        known = await self._state_db.list_placeholder_paths()
+
+        for stale_path in sorted(known - desired, key=lambda value: value.count("/"), reverse=True):
+            await asyncio.to_thread(self._remove_placeholder, stale_path)
+            await self._state_db.set_presence(stale_path, placeholder=False)
+
+        for row in rows:
+            rel_path = str(row["path"] or "")
+            if not rel_path or rel_path not in desired:
+                continue
+            await asyncio.to_thread(
+                self._create_placeholder,
+                rel_path,
+                row["kind"] == FileKind.DIRECTORY.value,
+            )
+            await self._state_db.set_presence(rel_path, placeholder=True)
+
+    def _create_placeholder(self, rel_path: str, is_dir: bool) -> None:
+        local_path = (self._local_root / Path(rel_path)).resolve()
+        if self._local_root not in local_path.parents and local_path != self._local_root:
+            return
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if is_dir:
+            local_path.mkdir(parents=True, exist_ok=True)
+            return
+        if not local_path.exists():
+            local_path.touch()
+
+    def _remove_placeholder(self, rel_path: str) -> None:
+        local_path = (self._local_root / Path(rel_path)).resolve()
+        if self._local_root not in local_path.parents and local_path != self._local_root:
+            return
+        if local_path.is_dir():
+            try:
+                next(local_path.iterdir())
+                return
+            except StopIteration:
+                local_path.rmdir()
+            except OSError:
+                return
+            return
+        if local_path.exists() and local_path.is_file() and local_path.stat().st_size == 0:
+            try:
+                local_path.unlink()
+            except OSError:
+                return
+
+    def _is_placeholder_path(
+        self,
+        path: Path,
+        rel_path: str,
+        placeholder_paths: set[str],
+    ) -> bool:
+        if rel_path not in placeholder_paths:
+            return False
+        if path.is_dir():
+            return self._directory_contains_only_placeholders(path, placeholder_paths)
+        try:
+            return path.stat().st_size == 0
+        except OSError:
+            return False
+
+    def _directory_contains_only_placeholders(
+        self,
+        path: Path,
+        placeholder_paths: set[str],
+    ) -> bool:
+        try:
+            children = list(path.iterdir())
+        except OSError:
+            return False
+        for child in children:
+            child_rel = child.relative_to(self._local_root).as_posix()
+            if child_rel not in placeholder_paths:
+                return False
+            if child.is_dir():
+                if not self._directory_contains_only_placeholders(child, placeholder_paths):
+                    return False
+                continue
+            try:
+                if child.stat().st_size != 0:
+                    return False
+            except OSError:
+                return False
+        return True
 
     @staticmethod
     def _cloud_to_rel_path(cloud_path: str, cloud_root: str) -> Optional[str]:

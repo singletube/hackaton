@@ -81,6 +81,7 @@ class SyncEngine:
             if row["kind"] == "dir"
             and bool(row["local_exists"])
             and not bool(row["cloud_exists"])
+            and not bool(row.get("placeholder"))
             and row["status"] != FileStatus.SYNCED.value
         ]
         to_cloud_dirs.sort(key=lambda row: str(row["path"]).count("/"))
@@ -99,6 +100,7 @@ class SyncEngine:
             if row["kind"] == "file"
             and bool(row["local_exists"])
             and not bool(row["cloud_exists"])
+            and not bool(row.get("placeholder"))
             and row["status"] != FileStatus.SYNCED.value
         ]
         to_cloud_files.sort(key=lambda row: str(row["path"]))
@@ -140,7 +142,7 @@ class SyncEngine:
             await self._state_db.update_status(rel_path, FileStatus.SYNCING)
             await self._ensure_cloud_parents(rel_path)
             await self._provider.ensure_dir(cloud_path)
-            await self._state_db.set_presence(rel_path, cloud_exists=True)
+            await self._state_db.set_presence(rel_path, cloud_exists=True, placeholder=False)
             await self._state_db.update_status(rel_path, FileStatus.SYNCED)
             self._ensured_cloud_dirs.add(cloud_path)
             stats.created_cloud_dirs += 1
@@ -153,7 +155,7 @@ class SyncEngine:
         try:
             await self._state_db.update_status(rel_path, FileStatus.SYNCING)
             local_path.mkdir(parents=True, exist_ok=True)
-            await self._state_db.set_presence(rel_path, local_exists=True)
+            await self._state_db.set_presence(rel_path, local_exists=True, placeholder=False)
             await self._state_db.update_status(rel_path, FileStatus.SYNCED)
             stats.created_local_dirs += 1
         except OSError as exc:
@@ -167,7 +169,7 @@ class SyncEngine:
             await self._state_db.update_status(rel_path, FileStatus.SYNCING)
             await self._ensure_cloud_parents(rel_path)
             await self._provider.upload_file(local_path, cloud_path)
-            await self._state_db.set_presence(rel_path, cloud_exists=True)
+            await self._state_db.set_presence(rel_path, cloud_exists=True, placeholder=False)
             await self._state_db.update_status(rel_path, FileStatus.SYNCED)
             stats.uploaded_files += 1
         except (OSError, ProviderError) as exc:
@@ -181,7 +183,7 @@ class SyncEngine:
             await self._state_db.update_status(rel_path, FileStatus.SYNCING)
             local_path.parent.mkdir(parents=True, exist_ok=True)
             await self._provider.download_file(cloud_path, local_path)
-            await self._state_db.set_presence(rel_path, local_exists=True)
+            await self._state_db.set_presence(rel_path, local_exists=True, placeholder=False)
             await self._state_db.update_status(rel_path, FileStatus.SYNCED)
             stats.downloaded_files += 1
         except (OSError, ProviderError) as exc:
@@ -193,7 +195,7 @@ class SyncEngine:
         try:
             await self._state_db.update_status(rel_path, FileStatus.SYNCING)
             await self._provider.delete(cloud_path)
-            await self._state_db.set_presence(rel_path, cloud_exists=False)
+            await self._state_db.set_presence(rel_path, cloud_exists=False, placeholder=False)
             await self._state_db.update_status(rel_path, FileStatus.DELETED)
             stats.deleted_cloud_items += 1
         except ProviderError as exc:
@@ -215,7 +217,7 @@ class SyncEngine:
                     await asyncio.to_thread(shutil.rmtree, local_path)
                 else:
                     await asyncio.to_thread(local_path.unlink)
-            await self._state_db.set_presence(rel_path, local_exists=False)
+            await self._state_db.set_presence(rel_path, local_exists=False, placeholder=False)
             await self._state_db.update_status(rel_path, FileStatus.DELETED)
             stats.deleted_local_items += 1
         except OSError as exc:

@@ -62,7 +62,16 @@ async def test_discover_merges_cloud_and_local() -> None:
     assert nested is not None
     assert local is not None
     assert remote["cloud_exists"] == 1
+    assert remote["placeholder"] == 1
     assert local["local_exists"] == 1
+    assert (local_root / "remote.txt").exists()
+    assert (local_root / "remote.txt").stat().st_size == 0
+    assert (local_root / "reports").is_dir()
+    assert (local_root / "reports" / "2026.txt").exists()
+    assert (local_root / "reports" / "2026.txt").stat().st_size == 0
+
+    second = await manager.discover(cloud_root="disk:/", recursive=True, max_depth=2)
+    assert second.local_items == 1
 
     await db.close()
     shutil.rmtree(case_dir, ignore_errors=True)

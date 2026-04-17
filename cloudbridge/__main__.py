@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Synchronize missing files/directories both ways (local <-> cloud)",
         parents=[common],
     )
+    subparsers.add_parser(
+        "gui",
+        help="Open the CloudBridge desktop window",
+        parents=[common],
+    )
     mount = subparsers.add_parser(
         "mount",
         help="Mount read-only FUSE view backed by local+cloud metadata",
@@ -344,6 +349,11 @@ async def async_main(argv: Optional[list[str]] = None) -> int:
         return await run_watch(settings)
     if args.command == "sync":
         return await run_sync(settings)
+    if args.command == "gui":
+        from .gui_app import launch_gui
+
+        launch_gui(settings)
+        return 0
     if args.command == "mount":
         return await run_mount(
             settings,
