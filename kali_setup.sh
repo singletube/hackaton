@@ -14,11 +14,14 @@ sudo apt install -y \
     python3-tk
 
 # 2. Setup Python Environment
-echo "[2/5] Setting up Python virtual environment..."
-python3 -m venv .venv
+echo "[2/5] Setting up Python virtual environment with system packages..."
+# We use --system-site-packages so that the venv can use python3-pyfuse3 and python3-nautilus
+# installed via apt, avoiding the need to compile them from source (which fails on Python 3.13).
+python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -e .[dev,fuse]
+# We install only [dev] extras, as [fuse] dependencies are already provided by the system.
+pip install -e .[dev]
 
 # 3. Configure Environment
 if [ ! -f .env ]; then

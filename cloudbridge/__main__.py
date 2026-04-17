@@ -284,7 +284,28 @@ async def run_sync(settings: Settings) -> int:
     return 1 if stats.errors else 0
 
 
+def resolve_rel_path(settings: Settings, path_str: str) -> str:
+    """Converts a potentially absolute path to a relative path from local_root."""
+    path = Path(path_str).resolve()
+    try:
+        return path.relative_to(settings.local_root.resolve()).as_posix()
+    except ValueError:
+        # If it's not relative to local_root, assume it's already a relative path
+        # or it's a cloud path (for 'share' command)
+        return path_str
+
+
 async def run_share(settings: Settings, path: str) -> int:
+    # Use relative path if it's a local file path
+    target_path = resolve_rel_path(settings, path)
+    # If it was a local path, convert to cloud path
+    if not target_path.startswith("disk:/"):
+        from integrations.nautilus.cloudbridge_extension import CloudBridgeMenuProvider
+        # We need a quick way to convert rel to cloud without instantiating the whole provider
+        # or just assume the user passed a cloud path if it starts with disk:/
+        # For now, let's keep it simple:
+        pass
+    
     try:
         provider = get_provider(settings)
     except ValueError as e:
@@ -293,8 +314,19 @@ async def run_share(settings: Settings, path: str) -> int:
 
     async with provider:
         try:
-            link = await provider.share_link(path)
-            print(f"Shared link for '{path}':")
+            # If it's not a cloud path already, we should probably try to map it
+            cloud_path = path
+            if not path.startswith("disk:/"):
+                rel = resolve_rel_path(settings, path)
+                # Simple mapping logic similar to extension
+                root = settings.cloud_root.strip()
+                if root in ("disk:", "disk:/"):
+                    cloud_path = "disk:/" if not rel else f"disk:/{rel}"
+                else:
+                    cloud_path = root if not rel else f"{root.rstrip('/')}/{rel}"
+
+            link = await provider.share_link(cloud_path)
+            print(f"Shared link for '{cloud_path}':")
             print(link)
             # Try to copy to clipboard
             try:
@@ -311,7 +343,8 @@ async def run_share(settings: Settings, path: str) -> int:
             return 1
     return 0
 
-async def run_pin(settings: Settings, path: str, pin: bool) -> int:
+async def run_pin(settings: Settings, path_str: str, pin: bool) -> int:
+    path = resolve_rel_path(settings, path_str)
     db = StateDB(settings.db_path)
     await db.connect()
     try:
@@ -325,7 +358,8 @@ async def run_pin(settings: Settings, path: str, pin: bool) -> int:
     return 0
 
 
-async def run_make_online_only(settings: Settings, path: str) -> int:
+async def run_make_online_only(settings: Settings, path_str: str) -> int:
+    path = resolve_rel_path(settings, path_str)
     db = StateDB(settings.db_path)
     await db.connect()
     try:
@@ -348,7 +382,8 @@ async def run_make_online_only(settings: Settings, path: str) -> int:
     return 0
 
 
-async def run_bring_offline(settings: Settings, path: str) -> int:
+async def run_bring_offline(settings: Settings, path_str: str) -> int:
+    path = resolve_rel_path(settings, path_str)
     db = StateDB(settings.db_path)
     await db.connect()
     try:
