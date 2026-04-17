@@ -190,6 +190,35 @@ class SyncEngine:
             await self._state_db.update_status(rel_path, FileStatus.ERROR, error=str(exc))
             stats.errors += 1
 
+    async def make_online_only(self, rel_path: str) -> None:
+        """Uploads the file if needed, then replaces it with a 0-byte placeholder."""
+        local_path = self._to_local_path(rel_path)
+        cloud_path = self._to_cloud_path(rel_path)
+
+        file_info = await self._state_db.get_file(rel_path)
+        if not file_info:
+            # If not in DB, it's a new local file.
+            await self._sync_file_to_cloud(rel_path, SyncStats())
+        elif not bool(file_info["cloud_exists"]):
+            await self._sync_file_to_cloud(rel_path, SyncStats())
+
+        # Now it's in the cloud. Delete local and mark as placeholder.
+        if local_path.exists():
+            await asyncio.to_thread(local_path.unlink)
+
+        # Create 0-byte placeholder
+        local_path.touch()
+
+        await self._state_db.set_presence(
+            rel_path, local_exists=False, cloud_exists=True, placeholder=True
+        )
+        await self._state_db.update_status(rel_path, FileStatus.SYNCED)
+
+    async def bring_offline(self, rel_path: str) -> None:
+        """Downloads the file and removes the placeholder status."""
+        await self._sync_file_to_local(rel_path, SyncStats())
+        await self._state_db.set_presence(rel_path, local_exists=True, placeholder=False)
+
     async def _delete_cloud_path(self, rel_path: str, stats: SyncStats) -> None:
         cloud_path = self._to_cloud_path(rel_path)
         try:

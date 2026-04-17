@@ -105,6 +105,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unpin.add_argument("path", help="Relative path of the file to unpin")
 
+    make_online = subparsers.add_parser(
+        "make-online-only",
+        help="Upload file and replace with 0-byte placeholder",
+        parents=[common],
+    )
+    make_online.add_argument("path", help="Relative path of the file")
+
+    bring_offline = subparsers.add_parser(
+        "bring-offline",
+        help="Download file and remove placeholder",
+        parents=[common],
+    )
+    bring_offline.add_argument("path", help="Relative path of the file")
+
     return parser
 
 
@@ -310,6 +324,53 @@ async def run_pin(settings: Settings, path: str, pin: bool) -> int:
         await db.close()
     return 0
 
+
+async def run_make_online_only(settings: Settings, path: str) -> int:
+    db = StateDB(settings.db_path)
+    await db.connect()
+    try:
+        provider = get_provider(settings)
+        async with provider:
+            engine = SyncEngine(
+                local_root=settings.local_root,
+                cloud_root=settings.cloud_root,
+                provider=provider,
+                state_db=db,
+                max_depth=settings.max_depth,
+            )
+            await engine.make_online_only(path)
+            print(f"File '{path}' is now online-only (0-byte placeholder)")
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        await db.close()
+    return 0
+
+
+async def run_bring_offline(settings: Settings, path: str) -> int:
+    db = StateDB(settings.db_path)
+    await db.connect()
+    try:
+        provider = get_provider(settings)
+        async with provider:
+            engine = SyncEngine(
+                local_root=settings.local_root,
+                cloud_root=settings.cloud_root,
+                provider=provider,
+                state_db=db,
+                max_depth=settings.max_depth,
+            )
+            await engine.bring_offline(path)
+            print(f"File '{path}' is now offline")
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        await db.close()
+    return 0
+
+
 async def run_mount(settings: Settings, *, mountpoint: Path, allow_other: bool) -> int:
     try:
         from .fuse_fs import mount_cloudbridge
@@ -372,6 +433,10 @@ async def async_main(argv: Optional[list[str]] = None) -> int:
         return await run_pin(settings, args.path, True)
     if args.command == "unpin":
         return await run_pin(settings, args.path, False)
+    if args.command == "make-online-only":
+        return await run_make_online_only(settings, args.path)
+    if args.command == "bring-offline":
+        return await run_bring_offline(settings, args.path)
     parser.error(f"Unknown command: {args.command}")
     return 2
 

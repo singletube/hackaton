@@ -12,11 +12,21 @@ except ImportError as exc:  # pragma: no cover - runs only inside Nautilus
     raise ImportError("nautilus-python is required for the Nautilus extension") from exc
 
 
-class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):  # pragma: no cover - desktop integration
+class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.InfoProvider):  # pragma: no cover - desktop integration
     def __init__(self) -> None:
         super().__init__()
         self._settings = load_settings()
         self._python = sys.executable or "python3"
+
+    def update_file_info(self, file_info):
+        target = self._get_local_path(file_info)
+        if target is None:
+            return
+
+        if target.is_file() and target.stat().st_size == 0:
+            # It's likely a placeholder
+            file_info.add_emblem("emblem-web")
+            file_info.add_string_attribute("cloudbridge_status", "Online-Only")
 
     def get_file_items(self, files):
         if not files:
@@ -48,6 +58,31 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):  # pragma
                 self._run_share,
                 [target],
             ),
+        ]
+
+        if target.is_file():
+            if target.stat().st_size == 0:
+                items.append(
+                    self._menu_item(
+                        "CloudBridge::BringOffline",
+                        "CloudBridge: Bring Offline",
+                        "Download full file content",
+                        self._run_bring_offline,
+                        [target],
+                    )
+                )
+            else:
+                items.append(
+                    self._menu_item(
+                        "CloudBridge::MakeOnline",
+                        "CloudBridge: Make Online-Only",
+                        "Keep only a 0-byte placeholder locally",
+                        self._run_make_online,
+                        [target],
+                    )
+                )
+
+        items.extend([
             self._menu_item(
                 "CloudBridge::Pin",
                 "CloudBridge: Pin Offline",
@@ -62,7 +97,7 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):  # pragma
                 self._run_pin,
                 [target, False],
             ),
-        ]
+        ])
         return tuple(items)
 
     def _menu_item(self, item_id, label, tip, callback, args):
@@ -83,6 +118,14 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):  # pragma
         rel = local_path.resolve().relative_to(self._settings.local_root).as_posix()
         command = "pin" if pin else "unpin"
         subprocess.Popen([self._python, "-m", "cloudbridge", command, rel])
+
+    def _run_make_online(self, _menu, local_path: Path):
+        rel = local_path.resolve().relative_to(self._settings.local_root).as_posix()
+        subprocess.Popen([self._python, "-m", "cloudbridge", "make-online-only", rel])
+
+    def _run_bring_offline(self, _menu, local_path: Path):
+        rel = local_path.resolve().relative_to(self._settings.local_root).as_posix()
+        subprocess.Popen([self._python, "-m", "cloudbridge", "bring-offline", rel])
 
     def _get_local_path(self, file_info) -> Path | None:
         location = file_info.get_location()

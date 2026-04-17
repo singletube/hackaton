@@ -280,27 +280,33 @@ class StateDB:
         placeholder: Optional[bool] = None,
     ) -> None:
         conn = self._require_conn()
-        clauses: list[str] = []
-        values: list[object] = []
+        updates = []
+        params = []
         if local_exists is not None:
-            clauses.append("local_exists = ?")
-            values.append(1 if local_exists else 0)
+            updates.append("local_exists = ?")
+            params.append(1 if local_exists else 0)
         if cloud_exists is not None:
-            clauses.append("cloud_exists = ?")
-            values.append(1 if cloud_exists else 0)
+            updates.append("cloud_exists = ?")
+            params.append(1 if cloud_exists else 0)
         if placeholder is not None:
-            clauses.append("placeholder = ?")
-            values.append(1 if placeholder else 0)
-        if not clauses:
+            updates.append("placeholder = ?")
+            params.append(1 if placeholder else 0)
+
+        if not updates:
             return
-        clauses.append("updated_at = ?")
-        values.append(_utc_now())
-        values.append(path)
+
+        params.append(_utc_now())
+        params.append(path)
         await conn.execute(
-            f"UPDATE files SET {', '.join(clauses)} WHERE path = ?",
-            values,
+            f"UPDATE files SET {', '.join(updates)}, updated_at = ? WHERE path = ?",
+            params,
         )
         await conn.commit()
+
+    async def get_file(self, path: str) -> Optional[aiosqlite.Row]:
+        conn = self._require_conn()
+        async with conn.execute("SELECT * FROM files WHERE path = ?", (path,)) as cursor:
+            return await cursor.fetchone()
 
     async def get(self, path: str) -> Optional[dict]:
         conn = self._require_conn()

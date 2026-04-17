@@ -81,9 +81,13 @@ class CloudBridgeApp:
 
         def runner() -> None:
             try:
-                result = asyncio.run(action())
+                result = self._run_coro_sync(action())
             except Exception as exc:  # pragma: no cover - defensive GUI path
-                self._root.after(0, lambda: self._finish_action(f"Error: {exc}", show_error=True))
+                message = f"Error: {exc}"
+                self._root.after(
+                    0,
+                    lambda msg=message: self._finish_action(msg, show_error=True),
+                )
                 return
             self._root.after(0, lambda: self._finish_action(result or "Done"))
 
@@ -98,7 +102,7 @@ class CloudBridgeApp:
 
     def _refresh_rows(self) -> None:
         try:
-            rows = asyncio.run(self._load_rows())
+            rows = self._run_coro_sync(self._load_rows())
         except Exception as exc:  # pragma: no cover - defensive GUI path
             self._status_var.set(f"Failed to load state: {exc}")
             return
@@ -156,6 +160,14 @@ class CloudBridgeApp:
             subprocess.Popen(["xdg-open", str(self._settings.local_root)])
         except OSError as exc:  # pragma: no cover - desktop dependent
             messagebox.showerror("CloudBridge", f"Failed to open folder: {exc}")
+
+    @staticmethod
+    def _run_coro_sync(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
 
 def launch_gui(settings: Settings | None = None) -> None:

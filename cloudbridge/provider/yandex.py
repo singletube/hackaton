@@ -44,24 +44,29 @@ class YandexDiskProvider:
         limit = 1000
 
         while True:
-            payload = await self._request_json(
-                "GET",
-                "/resources",
-                params={
-                    "path": path,
-                    "limit": str(limit),
-                    "offset": str(offset),
-                    "fields": (
-                        "_embedded.items.name,"
-                        "_embedded.items.path,"
-                        "_embedded.items.type,"
-                        "_embedded.items.size,"
-                        "_embedded.items.md5,"
-                        "_embedded.items.modified,"
-                        "_embedded.total"
-                    ),
-                },
-            )
+            try:
+                payload = await self._request_json(
+                    "GET",
+                    "/resources",
+                    params={
+                        "path": path,
+                        "limit": str(limit),
+                        "offset": str(offset),
+                        "fields": (
+                            "_embedded.items.name,"
+                            "_embedded.items.path,"
+                            "_embedded.items.type,"
+                            "_embedded.items.size,"
+                            "_embedded.items.md5,"
+                            "_embedded.items.modified,"
+                            "_embedded.total"
+                        ),
+                    },
+                )
+            except ProviderError as exc:
+                if self._is_not_found_error(exc):
+                    return []
+                raise
             embedded = payload.get("_embedded") or {}
             items = embedded.get("items") or []
             for item in items:
@@ -251,3 +256,8 @@ class YandexDiskProvider:
         if value == "file":
             return FileKind.FILE
         return None
+
+    @staticmethod
+    def _is_not_found_error(exc: ProviderError) -> bool:
+        message = str(exc)
+        return "DiskNotFoundError" in message or '"error":"DiskNotFoundError"' in message
