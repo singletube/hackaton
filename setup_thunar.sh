@@ -40,8 +40,11 @@ add_action() {
 	<video-files/>
 </action>"
 
+    # Escape newlines for sed
+    local escaped_xml=$(echo "$xml" | sed ':a;N;$!ba;s/\n/\\n/g')
+
     # Insert before the closing </actions> tag
-    sed -i "s|</actions>|$xml\n</actions>|" "$UCA_FILE"
+    sed -i "s|<\/actions>|$escaped_xml\\n<\/actions>|" "$UCA_FILE"
     echo "Added action: $name"
 }
 
