@@ -11,7 +11,6 @@ from .models import FileKind, FileStatus
 from .provider import CloudProvider, ProviderError, YandexDiskProvider, NextCloudProvider
 from .state_db import StateDB
 from .sync_engine import SyncEngine
-from .watcher import LocalWatcher
 
 
 def get_provider(settings: Settings) -> CloudProvider:
@@ -179,6 +178,13 @@ async def run_discover(settings: Settings, *, recursive: bool) -> int:
 
 
 async def run_watch(settings: Settings) -> int:
+    try:
+        from .watcher import LocalWatcher
+    except ModuleNotFoundError as exc:
+        print("Watch mode requires the 'watchdog' package to be installed.")
+        print(f"Details: {exc}")
+        return 2
+
     db = StateDB(settings.db_path)
     await db.connect()
     await db.init_schema()
