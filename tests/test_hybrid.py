@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from cloudbridge.config import AppConfig
+from cloudbridge.filesystem import is_placeholder_file
 from cloudbridge.hybrid import HybridManager
 from cloudbridge.models import EntryKind, RemoteEntry, SyncState
 from cloudbridge.paths import normalize_virtual_path, parent_path
@@ -115,6 +116,10 @@ async def test_discover_merges_remote_and_local_views(tmp_path: Path) -> None:
         remote_entries = await manager.list_directory("/remote")
         assert remote_entries[0].path == "/remote/file.txt"
         assert remote_entries[0].sync_state is SyncState.PLACEHOLDER
+        placeholder_path = config.sync_root / "remote" / "file.txt"
+        assert placeholder_path.exists()
+        assert is_placeholder_file(placeholder_path)
+        assert placeholder_path.stat().st_size < 1024
     finally:
         await manager.close()
 
@@ -143,5 +148,37 @@ async def test_daemon_once_uploads_startup_local_only_entries(tmp_path: Path) ->
         assert entry is not None
         assert entry.sync_state is SyncState.SYNCED
         assert provider._content["/startup.txt"] == b"daemon"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_discover_cleans_stale_remote_placeholders(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    manager = HybridManager(config, state, provider)
+    try:
+        await manager.discover()
+        placeholder_path = config.sync_root / "remote" / "file.txt"
+        assert placeholder_path.exists()
+        assert is_placeholder_file(placeholder_path)
+
+        provider._entries.pop("/remote/file.txt", None)
+        provider._content.pop("/remote/file.txt", None)
+
+        await manager.discover()
+        assert not placeholder_path.exists()
+        assert await state.get_entry("/remote/file.txt") is None
     finally:
         await manager.close()

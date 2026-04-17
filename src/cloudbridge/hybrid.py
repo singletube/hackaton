@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .config import AppConfig
-from .filesystem import materialize_remote_directories, scan_local_subtree, scan_local_tree, stat_local_entry
+from .filesystem import materialize_remote_placeholders, scan_local_subtree, scan_local_tree, stat_local_entry
 from .models import EntryKind, IndexedEntry, JobOperation, SyncState
 from .paths import normalize_virtual_path, virtual_to_local_path
 from .providers import CloudProvider, NextcloudProvider, YandexDiskProvider
@@ -49,8 +49,7 @@ class HybridManager:
 
     async def discover(self) -> list[IndexedEntry]:
         remote_entries = await self._provider.walk("/", concurrency=self._config.scan_concurrency)
-        remote_directories = [entry.path for entry in remote_entries if entry.kind is EntryKind.DIRECTORY]
-        await asyncio.to_thread(materialize_remote_directories, self._config.sync_root, remote_directories)
+        await asyncio.to_thread(materialize_remote_placeholders, self._config.sync_root, remote_entries)
         local_entries = await asyncio.to_thread(scan_local_tree, self._config.sync_root)
         await self._state.apply_remote_snapshot(self._provider.name, remote_entries, revision=uuid4().hex)
         await self._state.apply_local_snapshot(self._provider.name, local_entries, revision=uuid4().hex)
