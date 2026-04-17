@@ -24,6 +24,7 @@ class JobOperation(StrEnum):
     DOWNLOAD = "download"
     DELETE_REMOTE = "delete_remote"
     DELETE_LOCAL = "delete_local"
+    MOVE_REMOTE = "move_remote"
 
 
 class JobStatus(StrEnum):
@@ -125,4 +126,3 @@ def infer_sync_state(
     if has_local:
         return SyncState.LOCAL_ONLY
     return SyncState.PLACEHOLDER
-

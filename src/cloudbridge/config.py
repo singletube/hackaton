@@ -12,6 +12,8 @@ class AppConfig:
     database_path: Path
     provider_name: str
     yandex_token: str | None
+    import_root: str = "/"
+    import_layout: str = "flat"
     watcher_backend: str = "auto"
     scan_concurrency: int = 8
     sync_concurrency: int = 4
@@ -24,9 +26,13 @@ class AppConfig:
         database_path = Path(source.get("CLOUDBRIDGE_DATABASE", app_home / "state.db")).expanduser()
         provider_name = source.get("CLOUDBRIDGE_PROVIDER", "yandex").strip().lower()
         yandex_token = source.get("YANDEX_DISK_TOKEN")
+        import_root = source.get("CLOUDBRIDGE_IMPORT_ROOT", "/").strip() or "/"
+        import_layout = source.get("CLOUDBRIDGE_IMPORT_LAYOUT", "flat").strip().lower() or "flat"
         watcher_backend = source.get("CLOUDBRIDGE_WATCHER_BACKEND", "auto").strip().lower() or "auto"
         scan_concurrency = max(1, int(source.get("CLOUDBRIDGE_SCAN_CONCURRENCY", "8")))
         sync_concurrency = max(1, int(source.get("CLOUDBRIDGE_SYNC_CONCURRENCY", "4")))
+        if import_layout not in {"flat", "by-parent", "by-date"}:
+            raise ValueError(f"Unsupported import layout: {import_layout}")
         if watcher_backend not in {"auto", "poll", "watchdog"}:
             raise ValueError(f"Unsupported watcher backend: {watcher_backend}")
         return cls(
@@ -35,6 +41,8 @@ class AppConfig:
             database_path=database_path,
             provider_name=provider_name,
             yandex_token=yandex_token,
+            import_root=import_root,
+            import_layout=import_layout,
             watcher_backend=watcher_backend,
             scan_concurrency=scan_concurrency,
             sync_concurrency=sync_concurrency,

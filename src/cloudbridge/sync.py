@@ -35,20 +35,28 @@ class SyncEngine:
 
     async def _process_job(self, job: SyncJob) -> None:
         await self._state.set_sync_state(job.path, SyncState.SYNCING)
+        refresh_paths = [job.path]
         try:
             if job.operation is JobOperation.UPLOAD:
                 await self._upload(job.path)
             elif job.operation is JobOperation.DOWNLOAD:
                 await self._download(job.path)
+            elif job.operation is JobOperation.MOVE_REMOTE:
+                if not job.target_path:
+                    raise ValueError("MOVE_REMOTE requires target_path.")
+                await self._provider.move(job.path, job.target_path, overwrite=True)
+                refresh_paths.append(job.target_path)
             elif job.operation is JobOperation.DELETE_REMOTE:
                 await self._provider.delete(job.path)
                 await self._state.clear_remote_prefix(self._provider.name, job.path)
             elif job.operation is JobOperation.DELETE_LOCAL:
                 await asyncio.to_thread(self._delete_local, job.path)
                 await self._state.clear_local_prefix(self._provider.name, job.path)
-            await self._refresh_subtree(job.path)
+            for refresh_path in refresh_paths:
+                await self._refresh_subtree(refresh_path)
             await self._state.complete_job(job.id)
-            await self._state.resolve_entry_state(job.path)
+            for refresh_path in refresh_paths:
+                await self._state.resolve_entry_state(refresh_path)
         except Exception as error:
             await self._state.set_sync_state(job.path, SyncState.ERROR, str(error))
             await self._state.fail_job(job, str(error))

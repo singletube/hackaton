@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from .filesystem import scan_local_subtree, scan_local_tree
-from .models import JobOperation, LocalEntry, SyncState
-from .paths import local_to_virtual_path, normalize_virtual_path
+from .filesystem import is_placeholder_file, scan_local_subtree, scan_local_tree
+from .models import IndexedEntry, JobOperation, LocalEntry, SyncState
+from .paths import local_to_virtual_path, normalize_virtual_path, virtual_to_local_path
 from .state import StateDB
 
 try:
@@ -54,6 +54,7 @@ class LocalWatcher:
         self._backend = self._resolve_backend(self._requested_backend)
         self._pending_dirty: set[str] = set()
         self._pending_deleted: set[str] = set()
+        self._pending_moves: list[tuple[str, str]] = []
         self._pending_event = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
@@ -81,6 +82,7 @@ class LocalWatcher:
         self._snapshot = {entry.path: entry for entry in entries}
         self._pending_dirty.clear()
         self._pending_deleted.clear()
+        self._pending_moves.clear()
         self._pending_event.clear()
 
     async def poll(self, timeout: float | None = None) -> LocalChangeSet:
@@ -123,36 +125,60 @@ class LocalWatcher:
         return changes
 
     async def _poll_pending(self, timeout: float | None) -> LocalChangeSet:
-        if not self._pending_dirty and not self._pending_deleted and timeout and timeout > 0:
+        if not self._pending_dirty and not self._pending_deleted and not self._pending_moves and timeout and timeout > 0:
             try:
                 await asyncio.wait_for(self._pending_event.wait(), timeout)
             except TimeoutError:
                 return LocalChangeSet(uploaded_paths=(), deleted_paths=())
 
-        candidate_paths = self._pending_dirty | self._pending_deleted
+        pending_moves = list(self._pending_moves)
+        pending_deleted = set(self._pending_deleted)
+        candidate_paths = set(self._pending_dirty) | pending_deleted
         self._pending_dirty.clear()
         self._pending_deleted.clear()
+        self._pending_moves.clear()
         self._pending_event.clear()
-        if not candidate_paths:
-            return LocalChangeSet(uploaded_paths=(), deleted_paths=())
 
-        changed_entries: list[LocalEntry] = []
+        uploaded_paths: list[str] = []
         deleted_paths: list[str] = []
-        for root in self._collapse_paths(candidate_paths):
-            previous_map = self._snapshot_subtree(root)
-            current_entries = await asyncio.to_thread(scan_local_subtree, self._sync_root, root)
-            current_map = {entry.path: entry for entry in current_entries}
 
-            for path, entry in current_map.items():
-                if self._entry_changed(previous_map.get(path), entry):
-                    changed_entries.append(entry)
-            for path in previous_map:
-                if path not in current_map:
-                    deleted_paths.append(path)
+        for source_path, target_path in pending_moves:
+            if await self._queue_placeholder_move(source_path, target_path):
+                uploaded_paths.append(target_path)
+                deleted_paths.append(source_path)
+                candidate_paths.discard(source_path)
+                candidate_paths.discard(target_path)
 
-            self._replace_snapshot_subtree(root, current_map)
+        for deleted_path in self._collapse_paths(pending_deleted):
+            if await self._queue_placeholder_delete(deleted_path):
+                deleted_paths.append(deleted_path)
+                candidate_paths.discard(deleted_path)
 
-        return await self._persist_changes(changed_entries, deleted_paths)
+        if candidate_paths:
+            changed_entries: list[LocalEntry] = []
+            scanned_deleted_paths: list[str] = []
+            for root in self._collapse_paths(candidate_paths):
+                previous_map = self._snapshot_subtree(root)
+                current_entries = await asyncio.to_thread(scan_local_subtree, self._sync_root, root)
+                current_map = {entry.path: entry for entry in current_entries}
+
+                for path, entry in current_map.items():
+                    if self._entry_changed(previous_map.get(path), entry):
+                        changed_entries.append(entry)
+                for path in previous_map:
+                    if path not in current_map:
+                        scanned_deleted_paths.append(path)
+
+                self._replace_snapshot_subtree(root, current_map)
+
+            scanned_changes = await self._persist_changes(changed_entries, scanned_deleted_paths)
+            uploaded_paths.extend(scanned_changes.uploaded_paths)
+            deleted_paths.extend(scanned_changes.deleted_paths)
+
+        return LocalChangeSet(
+            uploaded_paths=tuple(self._collapse_paths(uploaded_paths)),
+            deleted_paths=tuple(self._collapse_paths(deleted_paths)),
+        )
 
     async def _persist_changes(self, changed_entries: list[LocalEntry], deleted_paths: list[str]) -> LocalChangeSet:
         if changed_entries:
@@ -174,6 +200,32 @@ class LocalWatcher:
 
         return LocalChangeSet(uploaded_paths=tuple(upload_roots), deleted_paths=tuple(delete_roots))
 
+    async def _queue_placeholder_delete(self, path: str) -> bool:
+        entry = await self._state.get_entry(path)
+        if not self._is_placeholder_entry(entry):
+            return False
+        if virtual_to_local_path(self._sync_root, path).exists():
+            return False
+        await self._state.enqueue_job(JobOperation.DELETE_REMOTE, path)
+        await self._state.set_sync_state(path, SyncState.QUEUED)
+        return True
+
+    async def _queue_placeholder_move(self, source_path: str, target_path: str) -> bool:
+        entry = await self._state.get_entry(source_path)
+        if not self._is_placeholder_entry(entry):
+            return False
+        if source_path == target_path:
+            return False
+        if not is_placeholder_file(virtual_to_local_path(self._sync_root, target_path)):
+            return False
+        await self._state.enqueue_job(JobOperation.MOVE_REMOTE, source_path, target_path=target_path)
+        await self._state.set_sync_state(source_path, SyncState.QUEUED)
+        return True
+
+    @staticmethod
+    def _is_placeholder_entry(entry: IndexedEntry | None) -> bool:
+        return bool(entry and entry.sync_state is SyncState.PLACEHOLDER and entry.has_remote and not entry.has_local)
+
     def _start_watchdog(self) -> None:
         if Observer is None:
             raise RuntimeError("watchdog backend requested but dependency is not installed.")
@@ -193,9 +245,12 @@ class LocalWatcher:
         src_path = self._to_virtual_path(getattr(event, "src_path", ""))
         if event_type == "moved":
             dest_path = self._to_virtual_path(getattr(event, "dest_path", ""))
-            if src_path is not None:
+            if src_path is not None and dest_path is not None:
+                self._pending_moves.append((src_path, dest_path))
+                self._pending_event.set()
+            elif src_path is not None:
                 self.notify(src_path, deleted=True)
-            if dest_path is not None:
+            elif dest_path is not None:
                 self.notify(dest_path)
             return
 

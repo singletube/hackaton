@@ -182,3 +182,215 @@ async def test_discover_cleans_stale_remote_placeholders(tmp_path: Path) -> None
         assert await state.get_entry("/remote/file.txt") is None
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_download_and_dehydrate_roundtrip(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    manager = HybridManager(config, state, provider)
+    try:
+        await manager.discover()
+        local_path = config.sync_root / "remote" / "file.txt"
+        assert is_placeholder_file(local_path)
+
+        await manager.download("/remote/file.txt")
+        assert local_path.read_bytes() == b"abc"
+        assert not is_placeholder_file(local_path)
+
+        await manager.dehydrate("/remote/file.txt")
+        entry = await state.get_entry("/remote/file.txt")
+        assert entry is not None
+        assert entry.sync_state is SyncState.PLACEHOLDER
+        assert is_placeholder_file(local_path)
+        assert local_path.stat().st_size < 1024
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_drain_sync_queue_processes_all_jobs(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+    (config.sync_root / "first.txt").write_text("first", encoding="utf-8")
+    (config.sync_root / "second.txt").write_text("second", encoding="utf-8")
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    manager = HybridManager(config, state, provider)
+    try:
+        await manager.queue_upload("/first.txt")
+        await manager.queue_upload("/second.txt")
+
+        processed = await manager.drain_sync_queue(limit=1)
+
+        assert processed == 2
+        assert provider._content["/first.txt"] == b"first"
+        assert provider._content["/second.txt"] == b"second"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_allocate_import_destination_dedupes_existing_remote_name(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        import_root="/incoming",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    provider._entries["/incoming"] = RemoteEntry(
+        path="/incoming",
+        name="incoming",
+        parent_path="/",
+        kind=EntryKind.DIRECTORY,
+    )
+    provider._entries["/incoming/photo.jpg"] = RemoteEntry(
+        path="/incoming/photo.jpg",
+        name="photo.jpg",
+        parent_path="/incoming",
+        kind=EntryKind.FILE,
+        size=3,
+    )
+    provider._content["/incoming/photo.jpg"] = b"old"
+
+    manager = HybridManager(config, state, provider)
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"new")
+    try:
+        destination = await manager.allocate_import_destination(source)
+
+        assert destination == "/incoming/photo (2).jpg"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_import_external_path_uses_deduped_destination(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        import_root="/incoming",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    provider._entries["/incoming"] = RemoteEntry(
+        path="/incoming",
+        name="incoming",
+        parent_path="/",
+        kind=EntryKind.DIRECTORY,
+    )
+    provider._entries["/incoming/photo.jpg"] = RemoteEntry(
+        path="/incoming/photo.jpg",
+        name="photo.jpg",
+        parent_path="/incoming",
+        kind=EntryKind.FILE,
+        size=3,
+    )
+    provider._content["/incoming/photo.jpg"] = b"old"
+
+    manager = HybridManager(config, state, provider)
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"new")
+    try:
+        destination = await manager.import_external_path(source)
+        entry = await state.get_entry(destination)
+
+        assert destination == "/incoming/photo (2).jpg"
+        assert entry is not None
+        assert provider._content["/incoming/photo.jpg"] == b"old"
+        assert provider._content["/incoming/photo (2).jpg"] == b"new"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_allocate_import_destination_uses_parent_layout_for_files(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        import_root="/incoming",
+        import_layout="by-parent",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    manager = HybridManager(config, state, MemoryProvider())
+    source_dir = tmp_path / "Pictures"
+    source_dir.mkdir()
+    source = source_dir / "photo.jpg"
+    source.write_bytes(b"new")
+    try:
+        destination = await manager.allocate_import_destination(source)
+
+        assert destination == "/incoming/Pictures/photo.jpg"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_allocate_import_destination_uses_date_layout_for_files(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        import_root="/incoming",
+        import_layout="by-date",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    manager = HybridManager(config, state, MemoryProvider())
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"new")
+    try:
+        destination = await manager.allocate_import_destination(source)
+
+        assert destination.startswith("/incoming/")
+        assert destination.endswith("/photo.jpg")
+        assert destination.count("/") == 4
+    finally:
+        await manager.close()

@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
-from pathlib import Path
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from .config import AppConfig
-from .filesystem import materialize_remote_placeholders, scan_local_subtree, scan_local_tree, stat_local_entry
+from .filesystem import materialize_remote_placeholder_file, materialize_remote_placeholders, scan_local_subtree, scan_local_tree, stat_local_entry
 from .models import EntryKind, IndexedEntry, JobOperation, SyncState
-from .paths import normalize_virtual_path, virtual_to_local_path
+from .paths import basename, join_virtual_path, normalize_virtual_path, parent_path, virtual_to_local_path
 from .providers import CloudProvider, NextcloudProvider, YandexDiskProvider
 from .state import StateDB
 from .sync import SyncEngine
@@ -58,6 +59,9 @@ class HybridManager:
     async def list_directory(self, path: str = "/") -> list[IndexedEntry]:
         return await self._state.list_directory(path)
 
+    async def get_entry(self, path: str) -> IndexedEntry | None:
+        return await self._state.get_entry(path)
+
     async def queue_upload(self, path: str) -> None:
         normalized = normalize_virtual_path(path)
         local_entry = await asyncio.to_thread(stat_local_entry, self._config.sync_root, normalized)
@@ -88,6 +92,14 @@ class HybridManager:
 
     async def run_sync_once(self, limit: int | None = None) -> int:
         return await self._sync.run_once(limit)
+
+    async def drain_sync_queue(self, limit: int | None = None) -> int:
+        processed = 0
+        while True:
+            current = await self.run_sync_once(limit)
+            if current == 0:
+                return processed
+            processed += current
 
     async def mkdir(self, path: str) -> None:
         normalized = normalize_virtual_path(path)
@@ -132,9 +144,35 @@ class HybridManager:
         await self.queue_upload(normalized)
         await self.run_sync_once(limit=1)
 
+    async def import_external_path(self, source: Path, destination_root: str | None = None) -> str:
+        destination = await self.allocate_import_destination(source, destination_root=destination_root)
+        await self.import_path(source, destination)
+        return destination
+
+    async def allocate_import_destination(self, source: Path, destination_root: str | None = None) -> str:
+        candidate = self._build_import_candidate(source, destination_root=destination_root)
+        return await self._dedupe_virtual_path(candidate)
+
     async def download(self, path: str) -> None:
         await self.queue_download(path)
         await self.run_sync_once(limit=1)
+
+    async def dehydrate(self, path: str) -> None:
+        normalized = normalize_virtual_path(path)
+        remote_entry = await self._provider.stat(normalized)
+        if remote_entry is None:
+            raise FileNotFoundError(normalized)
+        if remote_entry.kind is EntryKind.DIRECTORY:
+            raise IsADirectoryError(normalized)
+        await asyncio.to_thread(
+            materialize_remote_placeholder_file,
+            self._config.sync_root,
+            remote_entry,
+            overwrite_existing=True,
+        )
+        await self._state.upsert_remote_entries(self._provider.name, [remote_entry])
+        await self._state.clear_local_prefix(self._provider.name, normalized)
+        await self._state.resolve_entry_state(normalized)
 
     async def run_daemon(
         self,
@@ -186,3 +224,43 @@ class HybridManager:
         for path in upload_roots:
             await self._state.enqueue_job(JobOperation.UPLOAD, path)
             await self._state.set_sync_state(path, SyncState.QUEUED)
+
+    async def _dedupe_virtual_path(self, path: str) -> str:
+        normalized = normalize_virtual_path(path)
+        if not await self._virtual_path_exists(normalized):
+            return normalized
+
+        name = basename(normalized)
+        parent = parent_path(normalized)
+        suffix = PurePosixPath(name).suffix
+        stem = name[: -len(suffix)] if suffix else name
+
+        counter = 2
+        while True:
+            candidate_name = f"{stem} ({counter}){suffix}"
+            candidate = join_virtual_path(parent, candidate_name)
+            if not await self._virtual_path_exists(candidate):
+                return candidate
+            counter += 1
+
+    async def _virtual_path_exists(self, path: str) -> bool:
+        normalized = normalize_virtual_path(path)
+        if virtual_to_local_path(self._config.sync_root, normalized).exists():
+            return True
+        if await self._state.get_entry(normalized) is not None:
+            return True
+        return await self._provider.stat(normalized) is not None
+
+    def _build_import_candidate(self, source: Path, destination_root: str | None = None) -> str:
+        normalized_root = normalize_virtual_path(destination_root or self._config.import_root)
+        if source.is_dir():
+            return join_virtual_path(normalized_root, source.name)
+        if self._config.import_layout == "by-parent":
+            parent_name = source.parent.name.strip() or "root"
+            return join_virtual_path(join_virtual_path(normalized_root, parent_name), source.name)
+        if self._config.import_layout == "by-date":
+            modified_at = datetime.fromtimestamp(source.stat().st_mtime, tz=UTC)
+            year = f"{modified_at.year:04d}"
+            month = f"{modified_at.month:02d}"
+            return join_virtual_path(join_virtual_path(join_virtual_path(normalized_root, year), month), source.name)
+        return join_virtual_path(normalized_root, source.name)

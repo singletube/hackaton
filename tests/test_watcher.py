@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from cloudbridge.filesystem import materialize_remote_placeholders
 from cloudbridge.models import EntryKind, JobOperation, RemoteEntry
 from cloudbridge.state import StateDB
 from cloudbridge.watcher import LocalWatcher
@@ -130,6 +131,92 @@ async def test_local_watcher_processes_notified_paths_with_watchdog_backend(tmp_
         jobs = await state.claim_jobs(10)
         assert len(jobs) == 1
         assert jobs[0].operation is JobOperation.DELETE_REMOTE
+    finally:
+        await watcher.close()
+        await state.close()
+
+
+@pytest.mark.asyncio
+async def test_local_watcher_deletes_remote_placeholder_with_watchdog_backend(tmp_path: Path) -> None:
+    sync_root = tmp_path / "mirror"
+    sync_root.mkdir(parents=True, exist_ok=True)
+
+    remote_entry = RemoteEntry(
+        path="/photo.jpg",
+        name="photo.jpg",
+        parent_path="/",
+        kind=EntryKind.FILE,
+        size=5_000_000,
+    )
+
+    state = StateDB(tmp_path / "state.db")
+    await state.connect()
+    watcher = LocalWatcher(state, sync_root, "memory", backend="watchdog")
+    try:
+        await state.upsert_remote_entries("memory", [remote_entry])
+        materialize_remote_placeholders(sync_root, [remote_entry])
+        await watcher.seed()
+
+        placeholder_path = sync_root / "photo.jpg"
+        placeholder_path.unlink()
+        watcher.notify("/photo.jpg", deleted=True)
+
+        changes = await watcher.poll(timeout=0)
+        assert changes.deleted_paths == ("/photo.jpg",)
+        jobs = await state.claim_jobs(10)
+        assert len(jobs) == 1
+        assert jobs[0].operation is JobOperation.DELETE_REMOTE
+        assert jobs[0].path == "/photo.jpg"
+    finally:
+        await watcher.close()
+        await state.close()
+
+
+@pytest.mark.asyncio
+async def test_local_watcher_moves_remote_placeholder_with_watchdog_backend(tmp_path: Path) -> None:
+    sync_root = tmp_path / "mirror"
+    sync_root.mkdir(parents=True, exist_ok=True)
+
+    remote_entry = RemoteEntry(
+        path="/photo.jpg",
+        name="photo.jpg",
+        parent_path="/",
+        kind=EntryKind.FILE,
+        size=5_000_000,
+    )
+
+    state = StateDB(tmp_path / "state.db")
+    await state.connect()
+    watcher = LocalWatcher(state, sync_root, "memory", backend="watchdog")
+    try:
+        await state.upsert_remote_entries("memory", [remote_entry])
+        materialize_remote_placeholders(sync_root, [remote_entry])
+        await watcher.seed()
+
+        source_path = sync_root / "photo.jpg"
+        target_path = sync_root / "renamed.jpg"
+        source_path.rename(target_path)
+        watcher._record_filesystem_event(
+            type(
+                "MoveEvent",
+                (),
+                {
+                    "event_type": "moved",
+                    "is_directory": False,
+                    "src_path": str(source_path),
+                    "dest_path": str(target_path),
+                },
+            )()
+        )
+
+        changes = await watcher.poll(timeout=0)
+        assert changes.uploaded_paths == ("/renamed.jpg",)
+        assert changes.deleted_paths == ("/photo.jpg",)
+        jobs = await state.claim_jobs(10)
+        assert len(jobs) == 1
+        assert jobs[0].operation is JobOperation.MOVE_REMOTE
+        assert jobs[0].path == "/photo.jpg"
+        assert jobs[0].target_path == "/renamed.jpg"
     finally:
         await watcher.close()
         await state.close()

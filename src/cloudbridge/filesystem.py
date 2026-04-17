@@ -129,6 +129,16 @@ def materialize_remote_directories(sync_root: Path, remote_paths: list[str]) -> 
         virtual_to_local_path(sync_root, path).mkdir(parents=True, exist_ok=True)
 
 
+def materialize_remote_placeholder_file(sync_root: Path, remote_entry: RemoteEntry, *, overwrite_existing: bool = False) -> None:
+    if remote_entry.kind is not EntryKind.FILE:
+        raise ValueError("materialize_remote_placeholder_file expects a file entry.")
+    local_path = virtual_to_local_path(sync_root, remote_entry.path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    if local_path.exists() and not overwrite_existing and not is_placeholder_file(local_path):
+        return
+    local_path.write_bytes(_build_placeholder_payload(remote_entry))
+
+
 def materialize_remote_placeholders(sync_root: Path, remote_entries: list[RemoteEntry]) -> None:
     sync_root.mkdir(parents=True, exist_ok=True)
     remote_directories = [entry.path for entry in remote_entries if entry.kind is EntryKind.DIRECTORY]
@@ -138,11 +148,7 @@ def materialize_remote_placeholders(sync_root: Path, remote_entries: list[Remote
         entry.path: entry for entry in remote_entries if entry.kind is EntryKind.FILE
     }
     for path, entry in remote_files.items():
-        local_path = virtual_to_local_path(sync_root, path)
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        if local_path.exists() and not is_placeholder_file(local_path):
-            continue
-        local_path.write_bytes(_build_placeholder_payload(entry))
+        materialize_remote_placeholder_file(sync_root, entry)
 
     for current_path in sync_root.rglob("*"):
         if not current_path.is_file() or not is_placeholder_file(current_path):
