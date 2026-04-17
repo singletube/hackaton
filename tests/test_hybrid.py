@@ -97,6 +97,7 @@ async def test_discover_merges_remote_and_local_views(tmp_path: Path) -> None:
         database_path=tmp_path / "app" / "state.db",
         provider_name="memory",
         yandex_token="test-token",
+        watcher_backend="poll",
     )
     config.ensure_directories()
     (config.sync_root / "draft.txt").write_text("draft", encoding="utf-8")
@@ -126,6 +127,7 @@ async def test_daemon_once_uploads_startup_local_only_entries(tmp_path: Path) ->
         database_path=tmp_path / "app" / "state.db",
         provider_name="memory",
         yandex_token="test-token",
+        watcher_backend="poll",
     )
     config.ensure_directories()
     (config.sync_root / "startup.txt").write_text("daemon", encoding="utf-8")

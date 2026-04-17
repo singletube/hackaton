@@ -75,6 +75,7 @@ async def test_queue_upload_and_download_roundtrip(tmp_path: Path) -> None:
         database_path=tmp_path / "app" / "state.db",
         provider_name="memory",
         yandex_token="test-token",
+        watcher_backend="poll",
     )
     config.ensure_directories()
 

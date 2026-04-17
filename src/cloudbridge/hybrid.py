@@ -144,27 +144,38 @@ class HybridManager:
         refresh_interval: float = 30.0,
         once: bool = False,
     ) -> None:
-        watcher = LocalWatcher(self._state, self._config.sync_root, self._provider.name)
-        await self.discover()
-        await self._queue_startup_uploads()
-        await watcher.seed()
-        next_refresh_at = time.monotonic() + max(refresh_interval, poll_interval)
+        watcher = LocalWatcher(
+            self._state,
+            self._config.sync_root,
+            self._provider.name,
+            backend=self._config.watcher_backend,
+        )
+        try:
+            await self.discover()
+            await self._queue_startup_uploads()
+            await watcher.start()
+            print(f"daemon watcher={watcher.backend_name}")
+            next_refresh_at = time.monotonic() + max(refresh_interval, poll_interval)
 
-        while True:
-            changes = await watcher.poll()
-            while await self.run_sync_once(limit=self._config.sync_concurrency):
-                continue
+            while True:
+                timeout = 0.0 if once else poll_interval
+                changes = await watcher.poll(timeout=timeout)
+                while await self.run_sync_once(limit=self._config.sync_concurrency):
+                    continue
 
-            if refresh_interval > 0 and time.monotonic() >= next_refresh_at:
-                await self.discover()
-                await self._queue_startup_uploads()
-                await watcher.seed()
-                next_refresh_at = time.monotonic() + refresh_interval
+                if refresh_interval > 0 and time.monotonic() >= next_refresh_at:
+                    await self.discover()
+                    await self._queue_startup_uploads()
+                    await watcher.seed()
+                    next_refresh_at = time.monotonic() + refresh_interval
 
-            if once:
-                return
+                if once:
+                    return
 
-            await asyncio.sleep(0.25 if not changes.is_empty else poll_interval)
+                if not changes.is_empty:
+                    continue
+        finally:
+            await watcher.close()
 
     async def _queue_startup_uploads(self) -> None:
         local_only_entries = await self._state.list_entries_by_states(SyncState.LOCAL_ONLY)

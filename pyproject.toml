@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
   "aiohttp>=3.11,<4.0",
   "aiosqlite>=0.20,<1.0",
+  "watchdog>=4.0,<7.0",
 ]
 
 [project.optional-dependencies]
@@ -28,4 +29,3 @@ packages = ["src/cloudbridge"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 asyncio_mode = "auto"
-
