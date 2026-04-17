@@ -186,6 +186,23 @@ class YandexDiskProvider:
                     f"Yandex delete error {resp.status} for {path}: {text}"
                 )
 
+    async def move(self, src_path: str, dest_path: str) -> None:
+        session = await self._ensure_session()
+        url = f"{self.BASE_URL}/resources/move"
+        headers = {"Authorization": f"OAuth {self._token}"}
+        async with session.post(
+            url,
+            headers=headers,
+            params={"from": src_path, "path": dest_path, "overwrite": "true"},
+        ) as resp:
+            if resp.status in (201, 202):
+                return
+            if resp.status >= 400:
+                text = await resp.text()
+                raise ProviderError(
+                    f"Yandex move error {resp.status} from {src_path} to {dest_path}: {text}"
+                )
+
     async def share_link(self, path: str) -> str:
         # Step 1: Publish the resource
         await self._request_json(

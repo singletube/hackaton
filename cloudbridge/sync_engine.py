@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+import shutil
 from pathlib import Path
 
 from .hybrid_manager import HybridManager
-from .models import FileStatus
+from .models import FileKind, FileStatus
 from .provider import CloudProvider, ProviderError
 from .state_db import StateDB
 
@@ -15,6 +17,8 @@ class SyncStats:
     downloaded_files: int = 0
     created_cloud_dirs: int = 0
     created_local_dirs: int = 0
+    deleted_cloud_items: int = 0
+    deleted_local_items: int = 0
     errors: int = 0
 
 
@@ -36,6 +40,20 @@ class SyncEngine:
         self._ensured_cloud_dirs: set[str] = set()
 
     async def sync(self) -> SyncStats:
+        stats = SyncStats()
+
+        pre_rows = await self._state_db.list_all(include_deleted=True)
+        to_cloud_deletes = [
+            row
+            for row in pre_rows
+            if not bool(row["local_exists"])
+            and bool(row["cloud_exists"])
+            and row["status"] == FileStatus.DELETED.value
+        ]
+        to_cloud_deletes.sort(key=lambda row: str(row["path"]).count("/"), reverse=True)
+        for row in to_cloud_deletes:
+            await self._delete_cloud_path(str(row["path"]), stats)
+
         manager = HybridManager(
             local_root=self._local_root,
             provider=self._provider,
@@ -47,33 +65,59 @@ class SyncEngine:
             max_depth=self._max_depth,
         )
 
-        rows = await self._state_db.list_all(include_deleted=False)
-        stats = SyncStats()
+        rows = await self._state_db.list_all(include_deleted=True)
+
+        to_local_deletes = [
+            row
+            for row in rows
+            if bool(row["local_exists"])
+            and not bool(row["cloud_exists"])
+            and row["status"] == FileStatus.SYNCED.value
+        ]
+        to_local_deletes.sort(key=lambda row: str(row["path"]).count("/"), reverse=True)
 
         to_cloud_dirs = [
             row for row in rows
-            if row["kind"] == "dir" and bool(row["local_exists"]) and not bool(row["cloud_exists"])
+            if row["kind"] == "dir"
+            and bool(row["local_exists"])
+            and not bool(row["cloud_exists"])
+            and row["status"] != FileStatus.SYNCED.value
         ]
         to_cloud_dirs.sort(key=lambda row: str(row["path"]).count("/"))
 
         to_local_dirs = [
             row for row in rows
-            if row["kind"] == "dir" and bool(row["cloud_exists"]) and not bool(row["local_exists"])
+            if row["kind"] == "dir"
+            and bool(row["cloud_exists"])
+            and not bool(row["local_exists"])
+            and row["status"] != FileStatus.DELETED.value
         ]
         to_local_dirs.sort(key=lambda row: str(row["path"]).count("/"))
 
         to_cloud_files = [
             row for row in rows
-            if row["kind"] == "file" and bool(row["local_exists"]) and not bool(row["cloud_exists"])
+            if row["kind"] == "file"
+            and bool(row["local_exists"])
+            and not bool(row["cloud_exists"])
+            and row["status"] != FileStatus.SYNCED.value
         ]
         to_cloud_files.sort(key=lambda row: str(row["path"]))
 
         to_local_files = [
             row for row in rows
-            if row["kind"] == "file" and bool(row["cloud_exists"]) and not bool(row["local_exists"])
+            if row["kind"] == "file"
+            and bool(row["cloud_exists"])
+            and not bool(row["local_exists"])
+            and row["status"] != FileStatus.DELETED.value
         ]
         to_local_files.sort(key=lambda row: str(row["path"]))
 
+        for row in to_local_deletes:
+            await self._delete_local_path(
+                str(row["path"]),
+                is_dir=row["kind"] == FileKind.DIRECTORY.value,
+                stats=stats,
+            )
         for row in to_cloud_dirs:
             await self._sync_dir_to_cloud(str(row["path"]), stats)
         for row in to_local_dirs:
@@ -141,6 +185,40 @@ class SyncEngine:
             await self._state_db.update_status(rel_path, FileStatus.SYNCED)
             stats.downloaded_files += 1
         except (OSError, ProviderError) as exc:
+            await self._state_db.update_status(rel_path, FileStatus.ERROR, error=str(exc))
+            stats.errors += 1
+
+    async def _delete_cloud_path(self, rel_path: str, stats: SyncStats) -> None:
+        cloud_path = self._to_cloud_path(rel_path)
+        try:
+            await self._state_db.update_status(rel_path, FileStatus.SYNCING)
+            await self._provider.delete(cloud_path)
+            await self._state_db.set_presence(rel_path, cloud_exists=False)
+            await self._state_db.update_status(rel_path, FileStatus.DELETED)
+            stats.deleted_cloud_items += 1
+        except ProviderError as exc:
+            await self._state_db.update_status(rel_path, FileStatus.ERROR, error=str(exc))
+            stats.errors += 1
+
+    async def _delete_local_path(
+        self,
+        rel_path: str,
+        *,
+        is_dir: bool,
+        stats: SyncStats,
+    ) -> None:
+        local_path = self._to_local_path(rel_path)
+        try:
+            await self._state_db.update_status(rel_path, FileStatus.SYNCING)
+            if local_path.exists():
+                if is_dir:
+                    await asyncio.to_thread(shutil.rmtree, local_path)
+                else:
+                    await asyncio.to_thread(local_path.unlink)
+            await self._state_db.set_presence(rel_path, local_exists=False)
+            await self._state_db.update_status(rel_path, FileStatus.DELETED)
+            stats.deleted_local_items += 1
+        except OSError as exc:
             await self._state_db.update_status(rel_path, FileStatus.ERROR, error=str(exc))
             stats.errors += 1
 

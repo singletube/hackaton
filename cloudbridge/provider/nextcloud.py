@@ -222,6 +222,28 @@ class NextCloudProvider:
                     f"NextCloud delete error {resp.status} for {path}: {text}"
                 )
 
+    async def move(self, src_path: str, dest_path: str) -> None:
+        clean_src = src_path.strip("/")
+        clean_dest = dest_path.strip("/")
+        if not clean_src or not clean_dest:
+            raise ProviderError("NextCloud move requires non-empty source and destination paths")
+
+        session = await self._ensure_session()
+        source_url = self._dav_item_url(clean_src)
+        destination_url = self._dav_item_url(clean_dest)
+        headers = {
+            "Destination": destination_url,
+            "Overwrite": "T",
+        }
+        async with session.request("MOVE", source_url, headers=headers) as resp:
+            if resp.status in (201, 204):
+                return
+            if resp.status >= 400:
+                text = await resp.text()
+                raise ProviderError(
+                    f"NextCloud move error {resp.status} from {src_path} to {dest_path}: {text}"
+                )
+
     async def share_link(self, path: str) -> str:
         session = await self._ensure_session()
         # NextCloud uses OCS API for shares

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cloudbridge.models import CloudEntry, FileKind
+from cloudbridge.models import CloudEntry, FileKind, FileStatus, LocalEntry
 from cloudbridge.state_db import StateDB
 from cloudbridge.sync_engine import SyncEngine
 
@@ -147,6 +147,110 @@ async def test_sync_engine_bidirectional_tree_alignment() -> None:
     assert cloud_only_row is not None and cloud_only_row["local_exists"] == 1 and cloud_only_row["cloud_exists"] == 1
     assert cloud_dir_row is not None and cloud_dir_row["local_exists"] == 1 and cloud_dir_row["cloud_exists"] == 1
     assert local_dir_row is not None and local_dir_row["local_exists"] == 1 and local_dir_row["cloud_exists"] == 1
+
+    await db.close()
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_sync_engine_propagates_explicit_local_delete_to_cloud() -> None:
+    case_dir = Path.cwd() / ".tmp_tests" / f"sync_delete_cloud_{uuid.uuid4().hex}"
+    local_root = case_dir / "local"
+    local_root.mkdir(parents=True, exist_ok=True)
+
+    db = StateDB(case_dir / "state.db")
+    await db.connect()
+    await db.init_schema()
+
+    provider = FakeSyncProvider()
+    provider.files["disk:/remove-me.txt"] = b"payload"
+
+    await db.upsert_cloud_entries(
+        [
+            CloudEntry(
+                path="remove-me.txt",
+                name="remove-me.txt",
+                kind=FileKind.FILE,
+                size=len(provider.files["disk:/remove-me.txt"]),
+            )
+        ]
+    )
+    await db.upsert_local_entries(
+        [LocalEntry(path="remove-me.txt", name="remove-me.txt", kind=FileKind.FILE)]
+    )
+    await db.update_status("remove-me.txt", FileStatus.SYNCED)
+    await db.mark_local_event(
+        "remove-me.txt",
+        name="remove-me.txt",
+        kind=FileKind.FILE.value,
+        status=FileStatus.DELETED,
+        exists=False,
+    )
+
+    engine = SyncEngine(
+        local_root=local_root,
+        cloud_root="disk:/",
+        provider=provider,
+        state_db=db,
+        max_depth=-1,
+    )
+    stats = await engine.sync()
+
+    assert stats.errors == 0
+    assert stats.deleted_cloud_items == 1
+    assert "disk:/remove-me.txt" not in provider.files
+
+    row = await db.get("remove-me.txt")
+    assert row is not None
+    assert row["status"] == FileStatus.DELETED.value
+    assert row["local_exists"] == 0
+    assert row["cloud_exists"] == 0
+
+    await db.close()
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_sync_engine_removes_local_copy_after_cloud_delete() -> None:
+    case_dir = Path.cwd() / ".tmp_tests" / f"sync_delete_local_{uuid.uuid4().hex}"
+    local_root = case_dir / "local"
+    local_root.mkdir(parents=True, exist_ok=True)
+    local_file = local_root / "stale.txt"
+    local_file.write_text("stale-local-copy", encoding="utf-8")
+
+    db = StateDB(case_dir / "state.db")
+    await db.connect()
+    await db.init_schema()
+
+    provider = FakeSyncProvider()
+
+    await db.upsert_cloud_entries(
+        [CloudEntry(path="stale.txt", name="stale.txt", kind=FileKind.FILE, size=16)]
+    )
+    await db.upsert_local_entries(
+        [LocalEntry(path="stale.txt", name="stale.txt", kind=FileKind.FILE, size=16)]
+    )
+    await db.update_status("stale.txt", FileStatus.SYNCED)
+    await db.set_presence("stale.txt", cloud_exists=False, local_exists=True)
+
+    engine = SyncEngine(
+        local_root=local_root,
+        cloud_root="disk:/",
+        provider=provider,
+        state_db=db,
+        max_depth=-1,
+    )
+    stats = await engine.sync()
+
+    assert stats.errors == 0
+    assert stats.deleted_local_items == 1
+    assert not local_file.exists()
+
+    row = await db.get("stale.txt")
+    assert row is not None
+    assert row["status"] == FileStatus.DELETED.value
+    assert row["local_exists"] == 0
+    assert row["cloud_exists"] == 0
 
     await db.close()
     shutil.rmtree(case_dir, ignore_errors=True)

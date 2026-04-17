@@ -252,6 +252,8 @@ async def run_sync(settings: Settings) -> int:
         f"downloaded={stats.downloaded_files}",
         f"mkdir_cloud={stats.created_cloud_dirs}",
         f"mkdir_local={stats.created_local_dirs}",
+        f"deleted_cloud={stats.deleted_cloud_items}",
+        f"deleted_local={stats.deleted_local_items}",
         f"errors={stats.errors}",
     )
     return 1 if stats.errors else 0

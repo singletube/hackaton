@@ -29,6 +29,9 @@ class CloudProvider(Protocol):
     async def delete(self, path: str) -> None:
         raise NotImplementedError
 
+    async def move(self, src_path: str, dest_path: str) -> None:
+        raise NotImplementedError
+
     async def share_link(self, path: str) -> str:
         """Create and return a public share link for the given path."""
         raise NotImplementedError
