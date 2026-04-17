@@ -116,3 +116,30 @@ async def test_discover_merges_remote_and_local_views(tmp_path: Path) -> None:
         assert remote_entries[0].sync_state is SyncState.PLACEHOLDER
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_daemon_once_uploads_startup_local_only_entries(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+    )
+    config.ensure_directories()
+    (config.sync_root / "startup.txt").write_text("daemon", encoding="utf-8")
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    manager = HybridManager(config, state, provider)
+    try:
+        await manager.run_daemon(poll_interval=0.01, refresh_interval=0, once=True)
+
+        entry = await state.get_entry("/startup.txt")
+        assert entry is not None
+        assert entry.sync_state is SyncState.SYNCED
+        assert provider._content["/startup.txt"] == b"daemon"
+    finally:
+        await manager.close()

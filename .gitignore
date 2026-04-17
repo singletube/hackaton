@@ -1,9 +1,11 @@
 .venv/
+.venv-win/
 .uv-cache/
 .uv-python/
 .tooling/
 .npm-cache/
 .tmp/
+.manual-check/
 __pycache__/
 .pytest_cache/
 *.pyc

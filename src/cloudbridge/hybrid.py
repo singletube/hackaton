@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import time
 from pathlib import Path
 from uuid import uuid4
 
 from .config import AppConfig
 from .filesystem import materialize_remote_directories, scan_local_subtree, scan_local_tree, stat_local_entry
-from .models import EntryKind, IndexedEntry, JobOperation
+from .models import EntryKind, IndexedEntry, JobOperation, SyncState
 from .paths import normalize_virtual_path, virtual_to_local_path
 from .providers import CloudProvider, NextcloudProvider, YandexDiskProvider
 from .state import StateDB
 from .sync import SyncEngine
+from .watcher import LocalWatcher
 
 
 class HybridManager:
@@ -64,6 +66,7 @@ class HybridManager:
             raise FileNotFoundError(virtual_to_local_path(self._config.sync_root, normalized))
         await self._state.upsert_local_entries(self._provider.name, [local_entry])
         await self._state.enqueue_job(JobOperation.UPLOAD, normalized)
+        await self._state.set_sync_state(normalized, SyncState.QUEUED)
 
     async def queue_download(self, path: str) -> None:
         normalized = normalize_virtual_path(path)
@@ -72,12 +75,17 @@ class HybridManager:
             raise FileNotFoundError(normalized)
         await self._state.upsert_remote_entries(self._provider.name, [remote_entry])
         await self._state.enqueue_job(JobOperation.DOWNLOAD, normalized)
+        await self._state.set_sync_state(normalized, SyncState.QUEUED)
 
     async def queue_remote_delete(self, path: str) -> None:
-        await self._state.enqueue_job(JobOperation.DELETE_REMOTE, normalize_virtual_path(path))
+        normalized = normalize_virtual_path(path)
+        await self._state.enqueue_job(JobOperation.DELETE_REMOTE, normalized)
+        await self._state.set_sync_state(normalized, SyncState.QUEUED)
 
     async def queue_local_delete(self, path: str) -> None:
-        await self._state.enqueue_job(JobOperation.DELETE_LOCAL, normalize_virtual_path(path))
+        normalized = normalize_virtual_path(path)
+        await self._state.enqueue_job(JobOperation.DELETE_LOCAL, normalized)
+        await self._state.set_sync_state(normalized, SyncState.QUEUED)
 
     async def run_sync_once(self, limit: int | None = None) -> int:
         return await self._sync.run_once(limit)
@@ -128,3 +136,43 @@ class HybridManager:
     async def download(self, path: str) -> None:
         await self.queue_download(path)
         await self.run_sync_once(limit=1)
+
+    async def run_daemon(
+        self,
+        *,
+        poll_interval: float = 2.0,
+        refresh_interval: float = 30.0,
+        once: bool = False,
+    ) -> None:
+        watcher = LocalWatcher(self._state, self._config.sync_root, self._provider.name)
+        await self.discover()
+        await self._queue_startup_uploads()
+        await watcher.seed()
+        next_refresh_at = time.monotonic() + max(refresh_interval, poll_interval)
+
+        while True:
+            changes = await watcher.poll()
+            while await self.run_sync_once(limit=self._config.sync_concurrency):
+                continue
+
+            if refresh_interval > 0 and time.monotonic() >= next_refresh_at:
+                await self.discover()
+                await self._queue_startup_uploads()
+                await watcher.seed()
+                next_refresh_at = time.monotonic() + refresh_interval
+
+            if once:
+                return
+
+            await asyncio.sleep(0.25 if not changes.is_empty else poll_interval)
+
+    async def _queue_startup_uploads(self) -> None:
+        local_only_entries = await self._state.list_entries_by_states(SyncState.LOCAL_ONLY)
+        upload_roots: list[str] = []
+        for entry in sorted(local_only_entries, key=lambda item: item.path.count("/")):
+            if any(entry.path == root or entry.path.startswith(f"{root}/") for root in upload_roots):
+                continue
+            upload_roots.append(entry.path)
+        for path in upload_roots:
+            await self._state.enqueue_job(JobOperation.UPLOAD, path)
+            await self._state.set_sync_state(path, SyncState.QUEUED)

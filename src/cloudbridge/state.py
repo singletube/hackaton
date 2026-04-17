@@ -380,6 +380,24 @@ class StateDB:
             rows = await cursor.fetchall()
         return [self._row_to_entry(row) for row in rows]
 
+    async def list_entries_by_states(self, *states: SyncState) -> list[IndexedEntry]:
+        if not states:
+            return []
+        placeholders = ",".join("?" for _ in states)
+        async with self._lock:
+            connection = self._require_connection()
+            cursor = await connection.execute(
+                f"""
+                SELECT *
+                FROM entries
+                WHERE sync_state IN ({placeholders})
+                ORDER BY path COLLATE NOCASE ASC
+                """,
+                [state.value for state in states],
+            )
+            rows = await cursor.fetchall()
+        return [self._row_to_entry(row) for row in rows]
+
     async def get_entry(self, path: str) -> IndexedEntry | None:
         normalized = normalize_virtual_path(path)
         async with self._lock:

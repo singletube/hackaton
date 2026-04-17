@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser = subparsers.add_parser("sync")
     sync_parser.add_argument("--limit", type=int, default=None)
 
+    daemon_parser = subparsers.add_parser("daemon")
+    daemon_parser.add_argument("--poll-interval", type=float, default=2.0)
+    daemon_parser.add_argument("--refresh-interval", type=float, default=30.0)
+    daemon_parser.add_argument("--once", action="store_true")
+
     return parser
 
 
@@ -112,6 +117,13 @@ async def run(args: argparse.Namespace) -> int:
             return 0
         if args.command == "sync":
             print(await manager.run_sync_once(args.limit))
+            return 0
+        if args.command == "daemon":
+            await manager.run_daemon(
+                poll_interval=args.poll_interval,
+                refresh_interval=args.refresh_interval,
+                once=args.once,
+            )
             return 0
         return 1
     finally:
