@@ -12,6 +12,7 @@ from .integration import (
     install_caja_integration,
     install_nautilus_integration,
     install_nemo_integration,
+    install_systemd_user_service,
     install_thunar_integration,
 )
 from .models import EntryKind, IndexedEntry
@@ -76,29 +77,43 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--refresh-interval", type=float, default=30.0)
     daemon_parser.add_argument("--once", action="store_true")
 
+    service_parser = subparsers.add_parser("install-service")
+    service_parser.add_argument("--repo-root", default=str(Path.cwd()))
+    service_parser.add_argument("--launcher-path")
+    service_parser.add_argument("--unit-path")
+    service_parser.add_argument("--service-name", default="cloudbridge")
+    service_parser.add_argument("--uv-path")
+    service_parser.add_argument("--launcher-command")
+    service_parser.add_argument("--poll-interval", type=float, default=2.0)
+    service_parser.add_argument("--refresh-interval", type=float, default=30.0)
+
     nautilus_parser = subparsers.add_parser("install-nautilus")
     nautilus_parser.add_argument("--repo-root", default=str(Path.cwd()))
     nautilus_parser.add_argument("--extension-dir")
     nautilus_parser.add_argument("--launcher-path")
     nautilus_parser.add_argument("--uv-path")
+    nautilus_parser.add_argument("--launcher-command")
 
     thunar_parser = subparsers.add_parser("install-thunar")
     thunar_parser.add_argument("--repo-root", default=str(Path.cwd()))
     thunar_parser.add_argument("--config-path")
     thunar_parser.add_argument("--launcher-path")
     thunar_parser.add_argument("--uv-path")
+    thunar_parser.add_argument("--launcher-command")
 
     nemo_parser = subparsers.add_parser("install-nemo")
     nemo_parser.add_argument("--repo-root", default=str(Path.cwd()))
     nemo_parser.add_argument("--actions-dir")
     nemo_parser.add_argument("--launcher-path")
     nemo_parser.add_argument("--uv-path")
+    nemo_parser.add_argument("--launcher-command")
 
     caja_parser = subparsers.add_parser("install-caja")
     caja_parser.add_argument("--repo-root", default=str(Path.cwd()))
     caja_parser.add_argument("--actions-dir")
     caja_parser.add_argument("--launcher-path")
     caja_parser.add_argument("--uv-path")
+    caja_parser.add_argument("--launcher-command")
 
     fm_parser = subparsers.add_parser("install-filemanager")
     fm_parser.add_argument("--manager", choices=("auto", "nautilus", "thunar", "nemo", "caja"), default="auto")
@@ -108,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     fm_parser.add_argument("--actions-dir")
     fm_parser.add_argument("--launcher-path")
     fm_parser.add_argument("--uv-path")
+    fm_parser.add_argument("--launcher-command")
 
     return parser
 
@@ -265,11 +281,30 @@ async def run(args: argparse.Namespace) -> int:
                 once=args.once,
             )
             return 0
+        if args.command == "install-service":
+            result = install_systemd_user_service(
+                config,
+                repo_root=Path(args.repo_root) if args.repo_root else None,
+                uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
+                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+                unit_path=Path(args.unit_path).expanduser() if args.unit_path else None,
+                service_name=args.service_name,
+                poll_interval=args.poll_interval,
+                refresh_interval=args.refresh_interval,
+            )
+            print(f"service={result.service_name}")
+            print(f"launcher={result.launcher_path}")
+            print(f"unit={result.unit_path}")
+            print("reload=systemctl --user daemon-reload")
+            print(f"enable=systemctl --user enable --now {result.service_name}.service")
+            return 0
         if args.command == "install-nautilus":
             result = install_nautilus_integration(
                 config,
                 repo_root=Path(args.repo_root),
                 uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
                 extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
                 launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
             )
@@ -282,6 +317,7 @@ async def run(args: argparse.Namespace) -> int:
                 config,
                 repo_root=Path(args.repo_root),
                 uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
                 config_path=Path(args.config_path).expanduser() if args.config_path else None,
                 launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
             )
@@ -294,6 +330,7 @@ async def run(args: argparse.Namespace) -> int:
                 config,
                 repo_root=Path(args.repo_root),
                 uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
                 actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
                 launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
             )
@@ -306,6 +343,7 @@ async def run(args: argparse.Namespace) -> int:
                 config,
                 repo_root=Path(args.repo_root),
                 uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
                 actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
                 launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
             )
@@ -325,6 +363,7 @@ async def run(args: argparse.Namespace) -> int:
                     config,
                     repo_root=Path(args.repo_root),
                     uv_path=args.uv_path,
+                    launcher_command=args.launcher_command,
                     extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
                     launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
                 )
@@ -338,6 +377,7 @@ async def run(args: argparse.Namespace) -> int:
                     config,
                     repo_root=Path(args.repo_root),
                     uv_path=args.uv_path,
+                    launcher_command=args.launcher_command,
                     config_path=Path(args.config_path).expanduser() if args.config_path else None,
                     launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
                 )
@@ -351,6 +391,7 @@ async def run(args: argparse.Namespace) -> int:
                     config,
                     repo_root=Path(args.repo_root),
                     uv_path=args.uv_path,
+                    launcher_command=args.launcher_command,
                     actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
                     launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
                 )
@@ -363,6 +404,7 @@ async def run(args: argparse.Namespace) -> int:
                 config,
                 repo_root=Path(args.repo_root),
                 uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
                 actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
                 launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
             )

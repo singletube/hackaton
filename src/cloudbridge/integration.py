@@ -6,6 +6,7 @@ import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 from xml.etree import ElementTree
 
 from .config import AppConfig
@@ -35,7 +36,14 @@ class CajaInstallResult:
     launcher_path: Path
 
 
-def render_launcher_script(config: AppConfig, repo_root: Path, uv_path: Path) -> str:
+@dataclass(slots=True, frozen=True)
+class ServiceInstallResult:
+    unit_path: Path
+    launcher_path: Path
+    service_name: str
+
+
+def render_launcher_script(config: AppConfig, command: Sequence[str], *, workdir: Path | None = None) -> str:
     exports = {
         "CLOUDBRIDGE_HOME": str(config.app_home),
         "CLOUDBRIDGE_SYNC_ROOT": str(config.sync_root),
@@ -53,11 +61,9 @@ def render_launcher_script(config: AppConfig, repo_root: Path, uv_path: Path) ->
     lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
     for key, value in exports.items():
         lines.append(f"export {key}={shlex.quote(value)}")
-    lines.append(f"cd {shlex.quote(str(repo_root))}")
-    lines.append(
-        "exec "
-        f"{shlex.quote(str(uv_path))} run --project {shlex.quote(str(repo_root))} cloudbridge \"$@\""
-    )
+    if workdir is not None:
+        lines.append(f"cd {shlex.quote(str(workdir))}")
+    lines.append("exec " + " ".join(shlex.quote(part) for part in command) + ' "$@"')
     return "\n".join(lines) + "\n"
 
 
@@ -235,6 +241,30 @@ def render_caja_action_desktop(launcher_path: Path) -> str:
     )
 
 
+def render_systemd_user_service(
+    launcher_path: Path,
+    *,
+    service_name: str = "cloudbridge",
+    poll_interval: float = 2.0,
+    refresh_interval: float = 30.0,
+) -> str:
+    return (
+        "[Unit]\n"
+        f"Description=CloudBridge background sync service ({service_name})\n"
+        "After=default.target network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"ExecStart={shlex.quote(str(launcher_path))} daemon --poll-interval {poll_interval:g} --refresh-interval {refresh_interval:g}\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
 def _resolve_uv_path(uv_path: str | None) -> Path:
     resolved_uv_raw = uv_path or shutil.which("uv")
     if not resolved_uv_raw:
@@ -245,20 +275,47 @@ def _resolve_uv_path(uv_path: str | None) -> Path:
     return resolved_uv
 
 
+def _resolve_launcher_runtime(
+    *,
+    repo_root: Path | None,
+    uv_path: str | None,
+    launcher_command: str | None,
+) -> tuple[list[str], Path | None]:
+    if launcher_command:
+        command = shlex.split(launcher_command)
+        if not command:
+            raise ValueError("launcher_command must not be empty.")
+        return command, None
+    if repo_root is None:
+        raise ValueError("repo_root is required when launcher_command is not provided.")
+    resolved_uv = _resolve_uv_path(uv_path)
+    resolved_repo_root = repo_root.expanduser().resolve()
+    return [
+        str(resolved_uv.resolve()),
+        "run",
+        "--project",
+        str(resolved_repo_root),
+        "cloudbridge",
+    ], resolved_repo_root
+
+
 def install_nautilus_integration(
     config: AppConfig,
     *,
-    repo_root: Path,
+    repo_root: Path | None,
     uv_path: str | None = None,
+    launcher_command: str | None = None,
     extension_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> NautilusInstallResult:
     if config.provider_name == "yandex" and not config.yandex_token:
         raise ValueError("YANDEX_DISK_TOKEN is required to install Nautilus integration for the Yandex provider.")
 
-    resolved_uv = _resolve_uv_path(uv_path)
-
-    repo_root = repo_root.expanduser().resolve()
+    command, workdir = _resolve_launcher_runtime(
+        repo_root=repo_root,
+        uv_path=uv_path,
+        launcher_command=launcher_command,
+    )
     extension_dir = (extension_dir or Path.home() / ".local" / "share" / "nautilus-python" / "extensions").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-nautilus").expanduser()
     extension_path = extension_dir / "cloudbridge_menu.py"
@@ -266,7 +323,7 @@ def install_nautilus_integration(
     extension_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
-    launcher_path.write_text(render_launcher_script(config, repo_root, resolved_uv.resolve()), encoding="utf-8")
+    launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
     extension_path.write_text(render_nautilus_extension(launcher_path.resolve(), config.sync_root.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
@@ -281,23 +338,27 @@ def install_nautilus_integration(
 def install_thunar_integration(
     config: AppConfig,
     *,
-    repo_root: Path,
+    repo_root: Path | None,
     uv_path: str | None = None,
+    launcher_command: str | None = None,
     config_path: Path | None = None,
     launcher_path: Path | None = None,
 ) -> ThunarInstallResult:
     if config.provider_name == "yandex" and not config.yandex_token:
         raise ValueError("YANDEX_DISK_TOKEN is required to install Thunar integration for the Yandex provider.")
 
-    resolved_uv = _resolve_uv_path(uv_path)
-    repo_root = repo_root.expanduser().resolve()
+    command, workdir = _resolve_launcher_runtime(
+        repo_root=repo_root,
+        uv_path=uv_path,
+        launcher_command=launcher_command,
+    )
     config_path = (config_path or Path.home() / ".config" / "Thunar" / "uca.xml").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-thunar").expanduser()
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
-    launcher_path.write_text(render_launcher_script(config, repo_root, resolved_uv.resolve()), encoding="utf-8")
+    launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
     existing_xml = config_path.read_text(encoding="utf-8") if config_path.exists() else None
     config_path.write_text(render_thunar_uca_xml(launcher_path.resolve(), existing_xml), encoding="utf-8")
 
@@ -313,16 +374,20 @@ def install_thunar_integration(
 def install_nemo_integration(
     config: AppConfig,
     *,
-    repo_root: Path,
+    repo_root: Path | None,
     uv_path: str | None = None,
+    launcher_command: str | None = None,
     actions_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> NemoInstallResult:
     if config.provider_name == "yandex" and not config.yandex_token:
         raise ValueError("YANDEX_DISK_TOKEN is required to install Nemo integration for the Yandex provider.")
 
-    resolved_uv = _resolve_uv_path(uv_path)
-    repo_root = repo_root.expanduser().resolve()
+    command, workdir = _resolve_launcher_runtime(
+        repo_root=repo_root,
+        uv_path=uv_path,
+        launcher_command=launcher_command,
+    )
     actions_dir = (actions_dir or Path.home() / ".local" / "share" / "nemo" / "actions").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-nemo").expanduser()
     action_path = actions_dir / "cloudbridge-upload.nemo_action"
@@ -330,7 +395,7 @@ def install_nemo_integration(
     actions_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
-    launcher_path.write_text(render_launcher_script(config, repo_root, resolved_uv.resolve()), encoding="utf-8")
+    launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
     action_path.write_text(render_nemo_action(launcher_path.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
@@ -345,16 +410,20 @@ def install_nemo_integration(
 def install_caja_integration(
     config: AppConfig,
     *,
-    repo_root: Path,
+    repo_root: Path | None,
     uv_path: str | None = None,
+    launcher_command: str | None = None,
     actions_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> CajaInstallResult:
     if config.provider_name == "yandex" and not config.yandex_token:
         raise ValueError("YANDEX_DISK_TOKEN is required to install Caja integration for the Yandex provider.")
 
-    resolved_uv = _resolve_uv_path(uv_path)
-    repo_root = repo_root.expanduser().resolve()
+    command, workdir = _resolve_launcher_runtime(
+        repo_root=repo_root,
+        uv_path=uv_path,
+        launcher_command=launcher_command,
+    )
     actions_dir = (actions_dir or Path.home() / ".local" / "share" / "file-manager" / "actions").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-caja").expanduser()
     action_path = actions_dir / "cloudbridge-upload.desktop"
@@ -362,7 +431,7 @@ def install_caja_integration(
     actions_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
-    launcher_path.write_text(render_launcher_script(config, repo_root, resolved_uv.resolve()), encoding="utf-8")
+    launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
     action_path.write_text(render_caja_action_desktop(launcher_path.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
@@ -371,6 +440,53 @@ def install_caja_integration(
     return CajaInstallResult(
         action_path=action_path.resolve(),
         launcher_path=launcher_path.resolve(),
+    )
+
+
+def install_systemd_user_service(
+    config: AppConfig,
+    *,
+    repo_root: Path | None,
+    uv_path: str | None = None,
+    launcher_command: str | None = None,
+    launcher_path: Path | None = None,
+    unit_path: Path | None = None,
+    service_name: str = "cloudbridge",
+    poll_interval: float = 2.0,
+    refresh_interval: float = 30.0,
+) -> ServiceInstallResult:
+    if config.provider_name == "yandex" and not config.yandex_token:
+        raise ValueError("YANDEX_DISK_TOKEN is required to install the CloudBridge service for the Yandex provider.")
+
+    command, workdir = _resolve_launcher_runtime(
+        repo_root=repo_root,
+        uv_path=uv_path,
+        launcher_command=launcher_command,
+    )
+    launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-service").expanduser()
+    unit_path = (unit_path or Path.home() / ".config" / "systemd" / "user" / f"{service_name}.service").expanduser()
+
+    launcher_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
+    unit_path.write_text(
+        render_systemd_user_service(
+            launcher_path.resolve(),
+            service_name=service_name,
+            poll_interval=poll_interval,
+            refresh_interval=refresh_interval,
+        ),
+        encoding="utf-8",
+    )
+
+    launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    unit_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    return ServiceInstallResult(
+        unit_path=unit_path.resolve(),
+        launcher_path=launcher_path.resolve(),
+        service_name=service_name,
     )
 
 
