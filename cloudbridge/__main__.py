@@ -376,8 +376,8 @@ async def run_mount(settings: Settings, *, mountpoint: Path, allow_other: bool) 
         from .fuse_fs import mount_cloudbridge
     except ModuleNotFoundError as exc:
         print(
-            "FUSE dependencies are missing. Install pyfuse3 and pyfuse3-asyncio "
-            "(or apt package python3-pyfuse3 on Ubuntu)."
+            "FUSE dependencies are missing. Install pyfuse3 "
+            "(or apt package python3-pyfuse3 on Ubuntu/Kali)."
         )
         print(f"Details: {exc}")
         return 2

@@ -9,6 +9,7 @@ sudo apt update
 sudo apt install -y \
     python3 python3-pip python3-venv \
     python3-nautilus fuse3 libfuse3-dev \
+    python3-pyfuse3 \
     pkg-config build-essential xclip wl-clipboard \
     python3-tk
 

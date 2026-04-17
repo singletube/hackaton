@@ -79,7 +79,8 @@ python -m cloudbridge mount --mountpoint ~/CloudBridgeMount
 sudo apt update
 sudo apt install -y \
   python3 python3-venv python3-pip \
-  fuse3 libfuse3-dev pkg-config build-essential
+  fuse3 libfuse3-dev pkg-config build-essential \
+  python3-pyfuse3
 ```
 
 2. Клонирование и окружение:

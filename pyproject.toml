@@ -18,9 +18,12 @@ dev = [
 ]
 fuse = [
   "pyfuse3>=3.4.0",
-  "pyfuse3-asyncio>=0.1.0",
 ]
 
 [tool.pytest.ini_options]
 addopts = "-q"
 asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["cloudbridge*"]
+exclude = ["integrations*", "tests*"]
