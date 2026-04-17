@@ -66,3 +66,52 @@ async def test_discover_merges_cloud_and_local() -> None:
 
     await db.close()
     shutil.rmtree(case_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_discover_full_snapshot_marks_missing_items_deleted() -> None:
+    case_dir = Path.cwd() / ".tmp_tests" / f"hybrid_{uuid.uuid4().hex}"
+    local_root = case_dir / "local"
+    local_root.mkdir(parents=True, exist_ok=True)
+    local_file = local_root / "notes.txt"
+    local_file.write_text("hello", encoding="utf-8")
+
+    db = StateDB(case_dir / "state.db")
+    await db.connect()
+    await db.init_schema()
+
+    provider = FakeProvider()
+    manager = HybridManager(
+        local_root=local_root,
+        provider=provider,
+        state_db=db,
+    )
+
+    first = await manager.discover(cloud_root="disk:/", recursive=True, max_depth=-1)
+    assert first.merged_items == 4
+
+    provider._data["disk:/"] = []
+    provider._data["disk:/reports"] = []
+    local_file.unlink()
+
+    second = await manager.discover(cloud_root="disk:/", recursive=True, max_depth=-1)
+    assert second.merged_items == 0
+
+    remote = await db.get("remote.txt")
+    nested = await db.get("reports/2026.txt")
+    local = await db.get("notes.txt")
+
+    assert remote is not None and remote["cloud_exists"] == 0 and remote["status"] == "deleted"
+    assert nested is not None and nested["cloud_exists"] == 0 and nested["status"] == "deleted"
+    assert local is not None and local["local_exists"] == 0 and local["status"] == "deleted"
+
+    await db.close()
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_cloud_to_rel_path_handles_yandex_and_nextcloud_roots() -> None:
+    assert HybridManager._cloud_to_rel_path("disk:/reports/2026.txt", "disk:/") == "reports/2026.txt"
+    assert HybridManager._cloud_to_rel_path("disk:/root/file.txt", "disk:/root") == "file.txt"
+    assert HybridManager._cloud_to_rel_path("remote/folder/file.txt", "/remote") == "folder/file.txt"
+    assert HybridManager._cloud_to_rel_path("/remote/folder/file.txt", "/remote") == "folder/file.txt"
+    assert HybridManager._cloud_to_rel_path("other/folder/file.txt", "/remote") is None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any, Optional
 
 import aiohttp
@@ -109,6 +111,80 @@ class YandexDiskProvider:
             raise ProviderError(
                 f"Yandex file read error {resp.status} for {path}: {text}"
             )
+
+    async def ensure_dir(self, path: str) -> None:
+        if not path:
+            return
+        session = await self._ensure_session()
+        url = f"{self.BASE_URL}/resources"
+        headers = {"Authorization": f"OAuth {self._token}"}
+        async with session.put(url, headers=headers, params={"path": path}) as resp:
+            if resp.status in (201, 409):
+                return
+            if resp.status >= 400:
+                text = await resp.text()
+                raise ProviderError(
+                    f"Yandex mkdir error {resp.status} for {path}: {text}"
+                )
+
+    async def upload_file(self, local_path: Path, cloud_path: str) -> None:
+        link_payload = await self._request_json(
+            "GET",
+            "/resources/upload",
+            params={"path": cloud_path, "overwrite": "true"},
+        )
+        href = link_payload.get("href")
+        if not href:
+            raise ProviderError(f"Missing upload URL for path: {cloud_path}")
+
+        data = await asyncio.to_thread(local_path.read_bytes)
+        session = await self._ensure_session()
+        async with session.put(href, data=data) as resp:
+            if resp.status in (200, 201, 202):
+                return
+            text = await resp.text()
+            raise ProviderError(
+                f"Yandex upload error {resp.status} for {cloud_path}: {text}"
+            )
+
+    async def download_file(self, cloud_path: str, local_path: Path) -> None:
+        link_payload = await self._request_json(
+            "GET",
+            "/resources/download",
+            params={"path": cloud_path},
+        )
+        href = link_payload.get("href")
+        if not href:
+            raise ProviderError(f"Missing download URL for path: {cloud_path}")
+
+        session = await self._ensure_session()
+        async with session.get(href) as resp:
+            if resp.status not in (200, 206):
+                text = await resp.text()
+                raise ProviderError(
+                    f"Yandex download error {resp.status} for {cloud_path}: {text}"
+                )
+            payload = await resp.read()
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(local_path.write_bytes, payload)
+
+    async def delete(self, path: str) -> None:
+        session = await self._ensure_session()
+        url = f"{self.BASE_URL}/resources"
+        headers = {"Authorization": f"OAuth {self._token}"}
+        async with session.delete(
+            url,
+            headers=headers,
+            params={"path": path, "permanently": "true"},
+        ) as resp:
+            if resp.status in (202, 204, 404):
+                return
+            if resp.status >= 400:
+                text = await resp.text()
+                raise ProviderError(
+                    f"Yandex delete error {resp.status} for {path}: {text}"
+                )
 
     async def share_link(self, path: str) -> str:
         # Step 1: Publish the resource

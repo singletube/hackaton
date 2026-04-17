@@ -37,7 +37,7 @@ class HybridManager:
         *,
         cloud_root: str = "disk:/",
         recursive: bool = True,
-        max_depth: int = 3,
+        max_depth: int = -1,
     ) -> DiscoverStats:
         cloud_entries = await self._discover_cloud_entries(
             cloud_root=cloud_root,
@@ -48,7 +48,13 @@ class HybridManager:
 
         cloud_count = await self._state_db.upsert_cloud_entries(cloud_entries)
         local_count = await self._state_db.upsert_local_entries(local_entries)
-        merged_count = await self._state_db.count_all()
+        if self._is_full_tree_snapshot(recursive=recursive, max_depth=max_depth):
+            await self._state_db.reconcile_snapshot(
+                cloud_paths={entry.path for entry in cloud_entries if entry.path},
+                local_paths={entry.path for entry in local_entries if entry.path},
+            )
+
+        merged_count = await self._state_db.count_present()
 
         return DiscoverStats(
             cloud_items=cloud_count,
@@ -89,7 +95,9 @@ class HybridManager:
                     )
                 )
 
-                if recursive and item.kind == FileKind.DIRECTORY and depth < max_depth:
+                if recursive and item.kind == FileKind.DIRECTORY and (
+                    max_depth < 0 or depth < max_depth
+                ):
                     queue.append((item.path, depth + 1))
 
         return result
@@ -131,14 +139,32 @@ class HybridManager:
 
     @staticmethod
     def _cloud_to_rel_path(cloud_path: str, cloud_root: str) -> Optional[str]:
-        normalized_root = cloud_root.rstrip("/")
-        if normalized_root == "disk:":
-            normalized_root = "disk:"
-        if cloud_path == normalized_root:
+        path_ns, path_value = HybridManager._split_cloud_path(cloud_path)
+        root_ns, root_value = HybridManager._split_cloud_path(cloud_root)
+
+        if root_ns and path_ns and root_ns != path_ns:
+            return None
+        if root_ns and not path_ns:
+            return None
+
+        if not root_value:
+            return path_value
+        if path_value == root_value:
             return ""
-        prefix = normalized_root + "/"
-        if cloud_path.startswith(prefix):
-            return cloud_path[len(prefix) :]
-        if cloud_path.startswith("disk:/"):
-            return cloud_path[len("disk:/") :]
+        prefix = root_value + "/"
+        if path_value.startswith(prefix):
+            return path_value[len(prefix) :]
         return None
+
+    @staticmethod
+    def _split_cloud_path(value: str) -> tuple[Optional[str], str]:
+        raw = str(value or "").strip()
+        if raw.startswith("disk:/"):
+            return "disk", raw[len("disk:/") :].strip("/")
+        if raw == "disk:":
+            return "disk", ""
+        return None, raw.strip("/")
+
+    @staticmethod
+    def _is_full_tree_snapshot(*, recursive: bool, max_depth: int) -> bool:
+        return recursive and max_depth < 0

@@ -10,6 +10,7 @@ from .hybrid_manager import HybridManager
 from .models import FileKind, FileStatus
 from .provider import CloudProvider, ProviderError, YandexDiskProvider, NextCloudProvider
 from .state_db import StateDB
+from .sync_engine import SyncEngine
 from .watcher import LocalWatcher
 
 
@@ -34,7 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--local-root", default=None, help="Local directory for sync")
     common.add_argument("--cloud-root", default=None, help="Cloud root path (disk:/...)")
     common.add_argument("--token", default=None, help="Yandex Disk OAuth token")
-    common.add_argument("--max-depth", type=int, default=None, help="Discovery depth")
+    common.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="Discovery depth (-1 for full tree)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(
@@ -55,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "watch",
         help="Watch local folder changes and queue sync statuses in DB",
+        parents=[common],
+    )
+    subparsers.add_parser(
+        "sync",
+        help="Synchronize missing files/directories both ways (local <-> cloud)",
         parents=[common],
     )
     mount = subparsers.add_parser(
@@ -212,6 +223,40 @@ async def run_watch(settings: Settings) -> int:
     return 0
 
 
+async def run_sync(settings: Settings) -> int:
+    db = StateDB(settings.db_path)
+    await db.connect()
+    await db.init_schema()
+
+    try:
+        provider = get_provider(settings)
+    except ValueError as e:
+        print(e)
+        await db.close()
+        return 2
+
+    async with provider:
+        engine = SyncEngine(
+            local_root=settings.local_root,
+            cloud_root=settings.cloud_root,
+            provider=provider,
+            state_db=db,
+            max_depth=settings.max_depth,
+        )
+        stats = await engine.sync()
+
+    await db.close()
+    print(
+        "Sync completed:",
+        f"uploaded={stats.uploaded_files}",
+        f"downloaded={stats.downloaded_files}",
+        f"mkdir_cloud={stats.created_cloud_dirs}",
+        f"mkdir_local={stats.created_local_dirs}",
+        f"errors={stats.errors}",
+    )
+    return 1 if stats.errors else 0
+
+
 async def run_share(settings: Settings, path: str) -> int:
     try:
         provider = get_provider(settings)
@@ -295,6 +340,8 @@ async def async_main(argv: Optional[list[str]] = None) -> int:
         return await run_discover(settings, recursive=not args.non_recursive)
     if args.command == "watch":
         return await run_watch(settings)
+    if args.command == "sync":
+        return await run_sync(settings)
     if args.command == "mount":
         return await run_mount(
             settings,

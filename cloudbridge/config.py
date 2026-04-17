@@ -31,7 +31,7 @@ def load_settings() -> Settings:
     db_path = Path(os.getenv("CLOUDBRIDGE_DB_PATH", ".cloudbridge/state.db"))
     local_root = Path(os.getenv("CLOUDBRIDGE_LOCAL_ROOT", ".")).resolve()
     cloud_root = os.getenv("CLOUDBRIDGE_CLOUD_ROOT", "disk:/")
-    max_depth = int(os.getenv("CLOUDBRIDGE_DISCOVERY_DEPTH", "3"))
+    max_depth = int(os.getenv("CLOUDBRIDGE_DISCOVERY_DEPTH", "-1"))
     return Settings(
         provider_type=provider_type,
         token=token,
@@ -43,4 +43,3 @@ def load_settings() -> Settings:
         cloud_root=cloud_root,
         max_depth=max_depth,
     )
-

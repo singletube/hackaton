@@ -96,6 +96,10 @@ class StateDB:
                 kind = excluded.kind,
                 size = excluded.size,
                 etag = excluded.etag,
+                status = CASE
+                    WHEN files.status = 'deleted' THEN 'discovered'
+                    ELSE files.status
+                END,
                 cloud_exists = 1,
                 modified_at = COALESCE(excluded.modified_at, files.modified_at),
                 updated_at = excluded.updated_at
@@ -135,6 +139,10 @@ class StateDB:
                 name = excluded.name,
                 kind = excluded.kind,
                 size = excluded.size,
+                status = CASE
+                    WHEN files.status = 'deleted' THEN 'discovered'
+                    ELSE files.status
+                END,
                 local_exists = 1,
                 modified_at = COALESCE(excluded.modified_at, files.modified_at),
                 updated_at = excluded.updated_at
@@ -143,6 +151,62 @@ class StateDB:
         )
         await conn.commit()
         return len(rows)
+
+    async def reconcile_snapshot(
+        self,
+        *,
+        cloud_paths: Iterable[str],
+        local_paths: Iterable[str],
+    ) -> None:
+        conn = self._require_conn()
+        now = _utc_now()
+
+        await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _snapshot_cloud(path TEXT PRIMARY KEY)")
+        await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _snapshot_local(path TEXT PRIMARY KEY)")
+        await conn.execute("DELETE FROM _snapshot_cloud")
+        await conn.execute("DELETE FROM _snapshot_local")
+
+        cloud_rows = [(path,) for path in cloud_paths if path]
+        local_rows = [(path,) for path in local_paths if path]
+
+        if cloud_rows:
+            await conn.executemany(
+                "INSERT OR IGNORE INTO _snapshot_cloud(path) VALUES (?)",
+                cloud_rows,
+            )
+        if local_rows:
+            await conn.executemany(
+                "INSERT OR IGNORE INTO _snapshot_local(path) VALUES (?)",
+                local_rows,
+            )
+
+        await conn.execute(
+            """
+            UPDATE files
+            SET cloud_exists = CASE
+                WHEN EXISTS(SELECT 1 FROM _snapshot_cloud c WHERE c.path = files.path) THEN 1
+                ELSE 0
+            END
+            """
+        )
+        await conn.execute(
+            """
+            UPDATE files
+            SET local_exists = CASE
+                WHEN EXISTS(SELECT 1 FROM _snapshot_local l WHERE l.path = files.path) THEN 1
+                ELSE 0
+            END
+            """
+        )
+        await conn.execute(
+            """
+            UPDATE files
+            SET status = ?, updated_at = ?
+            WHERE local_exists = 0 AND cloud_exists = 0 AND status != ?
+            """,
+            (FileStatus.DELETED.value, now, FileStatus.DELETED.value),
+        )
+        await conn.commit()
 
     async def mark_local_event(
         self,
@@ -197,6 +261,33 @@ class StateDB:
         )
         await conn.commit()
 
+    async def set_presence(
+        self,
+        path: str,
+        *,
+        local_exists: Optional[bool] = None,
+        cloud_exists: Optional[bool] = None,
+    ) -> None:
+        conn = self._require_conn()
+        clauses: list[str] = []
+        values: list[object] = []
+        if local_exists is not None:
+            clauses.append("local_exists = ?")
+            values.append(1 if local_exists else 0)
+        if cloud_exists is not None:
+            clauses.append("cloud_exists = ?")
+            values.append(1 if cloud_exists else 0)
+        if not clauses:
+            return
+        clauses.append("updated_at = ?")
+        values.append(_utc_now())
+        values.append(path)
+        await conn.execute(
+            f"UPDATE files SET {', '.join(clauses)} WHERE path = ?",
+            values,
+        )
+        await conn.commit()
+
     async def get(self, path: str) -> Optional[dict]:
         conn = self._require_conn()
         cursor = await conn.execute("SELECT * FROM files WHERE path = ?", (path,))
@@ -208,6 +299,14 @@ class StateDB:
     async def count_all(self) -> int:
         conn = self._require_conn()
         cursor = await conn.execute("SELECT COUNT(*) AS c FROM files")
+        row = await cursor.fetchone()
+        return int(row["c"])
+
+    async def count_present(self) -> int:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS c FROM files WHERE local_exists = 1 OR cloud_exists = 1"
+        )
         row = await cursor.fetchone()
         return int(row["c"])
 
@@ -225,9 +324,18 @@ class StateDB:
         )
         await conn.commit()
 
-    async def list_all(self) -> list[dict]:
+    async def list_all(self, *, include_deleted: bool = True) -> list[dict]:
         conn = self._require_conn()
-        cursor = await conn.execute("SELECT * FROM files ORDER BY path ASC")
+        if include_deleted:
+            cursor = await conn.execute("SELECT * FROM files ORDER BY path ASC")
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM files
+                WHERE local_exists = 1 OR cloud_exists = 1
+                ORDER BY path ASC
+                """
+            )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 

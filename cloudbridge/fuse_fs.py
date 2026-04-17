@@ -73,7 +73,7 @@ class CloudBridgeFS(BaseClass):
         self._children: dict[int, list[int]] = {}
 
     async def refresh_index(self) -> None:
-        rows = await self._state_db.list_all()
+        rows = await self._state_db.list_all(include_deleted=False)
         self._path_to_node.clear()
         self._inode_to_node.clear()
         self._children.clear()
@@ -358,4 +358,3 @@ async def mount_cloudbridge(
         if provider is not None:
             await provider.close()
         await state_db.close()
-

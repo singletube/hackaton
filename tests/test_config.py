@@ -22,7 +22,7 @@ def test_load_settings_defaults(monkeypatch):
     assert settings.db_path == Path(".cloudbridge/state.db")
     assert settings.local_root == Path(".").resolve()
     assert settings.cloud_root == "disk:/"
-    assert settings.max_depth == 3
+    assert settings.max_depth == -1
 
 def test_load_settings_with_env_vars(monkeypatch):
     monkeypatch.setenv("CLOUDBRIDGE_PROVIDER", "nextcloud")

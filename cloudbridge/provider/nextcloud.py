@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
-from urllib.parse import quote, urljoin
+from urllib.parse import quote
 
 import aiohttp
 
@@ -50,9 +52,8 @@ class NextCloudProvider:
 
     async def list_dir(self, path: str) -> list[CloudEntry]:
         session = await self._ensure_session()
-        # Clean up path to avoid double slashes
         clean_path = path.strip("/")
-        url = f"{self._dav_url}/{quote(clean_path)}" if clean_path else self._dav_url
+        url = self._dav_item_url(clean_path)
 
         headers = {"Depth": "1"}
         async with session.request("PROPFIND", url, headers=headers) as resp:
@@ -144,7 +145,7 @@ class NextCloudProvider:
             return b""
 
         clean_path = path.strip("/")
-        url = f"{self._dav_url}/{quote(clean_path)}"
+        url = self._dav_item_url(clean_path)
         end = offset + size - 1
         headers = {"Range": f"bytes={offset}-{end}"}
 
@@ -158,6 +159,68 @@ class NextCloudProvider:
             raise ProviderError(
                 f"NextCloud file read error {resp.status} for {path}: {text}"
             )
+
+    async def ensure_dir(self, path: str) -> None:
+        clean_path = path.strip("/")
+        if not clean_path:
+            return
+
+        session = await self._ensure_session()
+        url = self._dav_item_url(clean_path)
+        async with session.request("MKCOL", url) as resp:
+            if resp.status in (201, 405):
+                return
+            if resp.status >= 400:
+                text = await resp.text()
+                raise ProviderError(
+                    f"NextCloud mkdir error {resp.status} for {path}: {text}"
+                )
+
+    async def upload_file(self, local_path: Path, cloud_path: str) -> None:
+        clean_path = cloud_path.strip("/")
+        data = await asyncio.to_thread(local_path.read_bytes)
+
+        session = await self._ensure_session()
+        url = self._dav_item_url(clean_path)
+        async with session.put(url, data=data) as resp:
+            if resp.status in (200, 201, 204):
+                return
+            text = await resp.text()
+            raise ProviderError(
+                f"NextCloud upload error {resp.status} for {cloud_path}: {text}"
+            )
+
+    async def download_file(self, cloud_path: str, local_path: Path) -> None:
+        clean_path = cloud_path.strip("/")
+
+        session = await self._ensure_session()
+        url = self._dav_item_url(clean_path)
+        async with session.get(url) as resp:
+            if resp.status not in (200, 206):
+                text = await resp.text()
+                raise ProviderError(
+                    f"NextCloud download error {resp.status} for {cloud_path}: {text}"
+                )
+            payload = await resp.read()
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(local_path.write_bytes, payload)
+
+    async def delete(self, path: str) -> None:
+        clean_path = path.strip("/")
+        if not clean_path:
+            return
+
+        session = await self._ensure_session()
+        url = self._dav_item_url(clean_path)
+        async with session.delete(url) as resp:
+            if resp.status in (200, 204, 404):
+                return
+            if resp.status >= 400:
+                text = await resp.text()
+                raise ProviderError(
+                    f"NextCloud delete error {resp.status} for {path}: {text}"
+                )
 
     async def share_link(self, path: str) -> str:
         session = await self._ensure_session()
@@ -183,3 +246,8 @@ class NextCloudProvider:
                 raise ProviderError("Could not find url in share response")
             except ET.ParseError as e:
                 raise ProviderError(f"Failed to parse share response: {e}")
+
+    def _dav_item_url(self, clean_path: str) -> str:
+        if not clean_path:
+            return self._dav_url
+        return f"{self._dav_url}/{quote(clean_path, safe='/')}"
