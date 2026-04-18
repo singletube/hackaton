@@ -191,6 +191,26 @@ def resolve_local_source_path(raw_path: str) -> Path:
     return candidate
 
 
+def validate_requested_manager(manager_name: str) -> None:
+    if manager_name == "auto":
+        return
+    required_commands = {
+        "nautilus": "nautilus",
+        "thunar": "thunar",
+        "nemo": "nemo",
+        "caja": "caja",
+    }
+    command = required_commands[manager_name]
+    if shutil.which(command):
+        return
+    detected = detect_file_manager()
+    detected_hint = f" Похоже, у вас активен {detected}." if detected else ""
+    raise RuntimeError(
+        f"Запрошен файловый менеджер {manager_name}, но команда {command} не найдена.{detected_hint} "
+        f"Укажите корректный --manager или установите нужный файловый менеджер."
+    )
+
+
 async def share_selected_path(manager: HybridManager, sync_root: Path, raw_path: str) -> str:
     resolved_path = resolve_cli_path(sync_root, raw_path)
     candidate = Path(raw_path).expanduser()
@@ -368,6 +388,8 @@ async def run(args: argparse.Namespace) -> int:
             if detected is None:
                 raise RuntimeError("Не удалось определить поддерживаемый файловый менеджер. Укажите --manager nautilus, thunar, nemo или caja.")
             manager_name = detected
+        else:
+            validate_requested_manager(manager_name)
         if manager_name == "nautilus":
             result = install_nautilus_integration(
                 config,
@@ -443,6 +465,8 @@ async def run(args: argparse.Namespace) -> int:
                 if detected is None:
                     raise RuntimeError("Не удалось определить поддерживаемый файловый менеджер. Укажите --manager nautilus, thunar, nemo или caja.")
                 manager_name = detected
+            else:
+                validate_requested_manager(manager_name)
             if manager_name == "nautilus":
                 result = install_nautilus_integration(
                     config,
