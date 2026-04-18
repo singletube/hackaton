@@ -50,8 +50,6 @@ try:
             logger.info("Initializing remote structure for %s...", REMOTE_ROOT)
             await provider.create_directory(REMOTE_ROOT)
             await manager.sync_directory(REMOTE_ROOT)
-            if os.getenv("BOOTSTRAP_LOCAL") == "1":
-                await manager.bootstrap_local_sync(MIRROR_DIR)
             if os.getenv("PRUNE_REMOTE") == "1":
                 await manager.prune_remote_only_files(MIRROR_DIR)
 
@@ -94,17 +92,23 @@ try:
 
             fuse_task = asyncio.create_task(run_fuse())
             watcher_task = asyncio.create_task(run_watcher())
+            background_tasks = []
+            if os.getenv("BOOTSTRAP_LOCAL", "1") != "0":
+                logger.info("Scheduling local bootstrap sync in background")
+                background_tasks.append(asyncio.create_task(manager.bootstrap_local_sync(MIRROR_DIR)))
             
             def shutdown_signal():
                 logger.info("Shutdown signal received")
                 fuse_task.cancel()
                 watcher_task.cancel()
+                for task in background_tasks:
+                    task.cancel()
                 
             for s in (signal.SIGINT, signal.SIGTERM):
                 asyncio.get_running_loop().add_signal_handler(s, shutdown_signal)
 
             try:
-                await asyncio.gather(fuse_task, watcher_task)
+                await asyncio.gather(fuse_task, watcher_task, *background_tasks)
             except asyncio.CancelledError:
                 logger.info("Tasks cancelled")
             finally:

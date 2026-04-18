@@ -32,6 +32,22 @@ ask_secret() {
   printf '%s' "$answer"
 }
 
+ask_watch_scope() {
+  local answer
+  printf '\nCloudBridge can watch extra folders to detect moves out of the sync folder.\n' >&2
+  printf '1) home - only %s\n' "${HOME}" >&2
+  printf '2) all  - %s, /tmp, /media, /mnt\n' "${HOME}" >&2
+  read -r -p "Watch scope [home/all] [home]: " answer
+  case "${answer:-home}" in
+    all|All|ALL|2)
+      printf '%s:%s:%s:%s' "${HOME}" "/tmp" "/media" "/mnt"
+      ;;
+    *)
+      printf '%s' "${HOME}"
+      ;;
+  esac
+}
+
 require_kali_tools() {
   say "Installing Kali system packages"
   sudo apt update
@@ -63,6 +79,7 @@ write_config() {
   local token="$1"
   local remote_root="$2"
   local local_path="$3"
+  local outbound_watches="$4"
 
   mkdir -p "${CONFIG_DIR}"
   {
@@ -72,6 +89,8 @@ write_config() {
     printf 'export CLOUDBRIDGE_IGNORE_FILE=%q\n' "${CONFIG_DIR}/ignored.json"
     printf 'export CLOUDBRIDGE_PROJECT_DIR=%q\n' "${PROJECT_DIR}"
     printf 'export CLOUDBRIDGE_PYTHON=%q\n' "${VENV_DIR}/bin/python"
+    printf 'export CLOUDBRIDGE_OUTBOUND_WATCHES=%q\n' "${outbound_watches}"
+    printf 'export BOOTSTRAP_LOCAL=1\n'
     printf 'export PYTHONUNBUFFERED=1\n'
   } > "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}"
@@ -123,20 +142,23 @@ main() {
   local token
   local remote_root
   local local_path
+  local outbound_watches
 
   token="$(ask_secret "Yandex OAuth token")"
   remote_root="$(ask "Yandex.Disk folder to sync" "${default_remote}")"
   local_path="$(ask "Local folder shown in Thunar" "${default_local}")"
+  outbound_watches="$(ask_watch_scope)"
 
   require_kali_tools
   create_venv
-  write_config "${token}" "${remote_root}" "${local_path}"
+  write_config "${token}" "${remote_root}" "${local_path}" "${outbound_watches}"
   install_thunar_action "${local_path}" "${remote_root}"
   install_launchers
 
   say "Setup complete"
   printf 'Config: %s\n' "${CONFIG_FILE}"
   printf 'Context menu: Thunar -> right click a file -> CloudBridge actions\n'
+  printf 'Outbound move watch scope: %s\n' "${outbound_watches}"
   printf 'Start watcher/daemon with: cloudbridge-start\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"
 
