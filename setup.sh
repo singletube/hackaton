@@ -5,8 +5,8 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${HOME}/.config/cloudbridge"
 CONFIG_FILE="${CONFIG_DIR}/env"
 BIN_DIR="${HOME}/.local/bin"
-AUTOSTART_DIR="${HOME}/.config/autostart"
 VENV_DIR="${PROJECT_DIR}/.venv"
+CACHE_DIR="${HOME}/.cache/cloudbridge"
 AUTO_YES=0
 TARGET_OS=""
 
@@ -106,10 +106,12 @@ install_packages_kali() {
     python3-venv \
     python3-dev \
     python3-pyfuse3 \
+    attr \
     fuse3 \
     libfuse3-dev \
     pkg-config \
     thunar \
+    desktop-file-utils \
     exo-utils \
     xdg-utils \
     mousepad \
@@ -130,29 +132,16 @@ install_packages_alt() {
     python3-module-pip \
     python3-module-pyfuse3 \
     python3-modules-sqlite3 \
+    attr \
     fuse3 \
     libfuse3-devel \
     pkg-config \
     thunar \
+    desktop-file-utils \
     xdg-utils \
     mousepad \
     ristretto \
     sqlite3
-
-  # Optional desktop integration dependencies for tray support.
-  local optional_packages=(
-    python3-module-gi
-    python3-module-cairo
-    libayatana-appindicator3
-    libappindicator3
-    zenity
-    libnotify
-  )
-  for package in "${optional_packages[@]}"; do
-    if ! sudo apt-get install "${apt_flags[@]}" "${package}"; then
-      warn "Optional package unavailable: ${package} (tray may degrade gracefully)"
-    fi
-  done
 }
 
 create_venv() {
@@ -171,8 +160,10 @@ write_config() {
   local token="$1"
   local remote_root="$2"
   local local_path="$3"
+  local db_path="${CACHE_DIR}/state.db"
 
   mkdir -p "${CONFIG_DIR}"
+  mkdir -p "${CACHE_DIR}"
   {
     printf 'export YANDEX_TOKEN=%q\n' "${token}"
     printf 'export YANDEX_PATH=%q\n' "${remote_root}"
@@ -180,15 +171,13 @@ write_config() {
     printf 'export CLOUDBRIDGE_IGNORE_FILE=%q\n' "${CONFIG_DIR}/ignored.json"
     printf 'export CLOUDBRIDGE_PROJECT_DIR=%q\n' "${PROJECT_DIR}"
     printf 'export CLOUDBRIDGE_PYTHON=%q\n' "${VENV_DIR}/bin/python"
-    printf 'export CLOUDBRIDGE_DB_PATH=%q\n' "/tmp/state.db"
-    printf 'export CLOUDBRIDGE_CACHE_DIR=%q\n' "/tmp/cache"
-    printf 'export CLOUDBRIDGE_DAEMON_LOG=%q\n' "/tmp/cloudbridge-daemon.log"
-    printf 'export CLOUDBRIDGE_STATUS_PATH=%q\n' "/tmp/cloudbridge-status.json"
-    printf 'export CLOUDBRIDGE_PID_PATH=%q\n' "/tmp/cloudbridge-daemon.pid"
+    printf 'export CLOUDBRIDGE_DB_PATH=%q\n' "${db_path}"
     printf 'export PYTHONUNBUFFERED=1\n'
   } > "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}"
-  mkdir -p "${local_path}" "${HOME}/.cache/cloudbridge/sessions"
+  mkdir -p "${local_path}" "${CACHE_DIR}/sessions"
+  touch "${db_path}"
+  chmod 600 "${db_path}"
 }
 
 install_filemanager_integration() {
@@ -204,6 +193,14 @@ install_filemanager_integration() {
     --python-bin "${VENV_DIR}/bin/python" \
     --editor auto
   thunar -q 2>/dev/null || true
+
+  say "Installing double-click placeholder opener"
+  "${VENV_DIR}/bin/python" "${PROJECT_DIR}/scratch/install_mime_opener.py" \
+    --project-dir "${PROJECT_DIR}" \
+    --env-file "${CONFIG_FILE}" \
+    --python-bin "${VENV_DIR}/bin/python" \
+    --launcher "${BIN_DIR}/cloudbridge-open-or-default"
+  thunar -q 2>/dev/null || true
 }
 
 install_launchers() {
@@ -213,28 +210,9 @@ install_launchers() {
 set -euo pipefail
 source "${CONFIG_FILE}"
 cd "${PROJECT_DIR}"
-log_file="\${CLOUDBRIDGE_DAEMON_LOG:-/tmp/cloudbridge-daemon.log}"
-log_dir="\$(dirname "\${log_file}")"
-mkdir -p "\${log_dir}" 2>/dev/null || true
-if ! touch "\${log_file}" 2>/dev/null; then
-  fallback_dir="\${XDG_CACHE_HOME:-\$HOME/.cache}/cloudbridge"
-  mkdir -p "\${fallback_dir}"
-  log_file="\${fallback_dir}/cloudbridge-daemon.log"
-  export CLOUDBRIDGE_DAEMON_LOG="\${log_file}"
-fi
-exec "\${CLOUDBRIDGE_PYTHON}" -m src.main 2>&1 | tee -a "\${log_file}"
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.main 2>&1 | tee /tmp/cloudbridge-daemon.log
 EOF
   chmod +x "${BIN_DIR}/cloudbridge-start"
-
-  cat > "${BIN_DIR}/cloudbridge-stop" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-source "${CONFIG_FILE}"
-if [[ -f "\${CLOUDBRIDGE_PID_PATH}" ]]; then
-  kill -TERM "\$(cat "\${CLOUDBRIDGE_PID_PATH}")" || true
-fi
-EOF
-  chmod +x "${BIN_DIR}/cloudbridge-stop"
 
   cat > "${BIN_DIR}/cloudbridge-open" <<EOF
 #!/usr/bin/env bash
@@ -245,38 +223,36 @@ exec "\${CLOUDBRIDGE_PYTHON}" -m src.cloud_open "\$@"
 EOF
   chmod +x "${BIN_DIR}/cloudbridge-open"
 
-  cat > "${BIN_DIR}/cloudbridge-tray" <<EOF
+  cat > "${BIN_DIR}/cloudbridge-open-or-default" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 source "${CONFIG_FILE}"
 cd "${PROJECT_DIR}"
-exec "\${CLOUDBRIDGE_PYTHON}" -m src.tray_app
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.open_or_default "\$@"
 EOF
-  chmod +x "${BIN_DIR}/cloudbridge-tray"
-}
-
-install_tray_autostart() {
-  mkdir -p "${AUTOSTART_DIR}"
-  cat > "${AUTOSTART_DIR}/cloudbridge-tray.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=CloudBridge Tray
-Comment=CloudBridge tray controller
-Exec=${BIN_DIR}/cloudbridge-tray
-Terminal=false
-X-GNOME-Autostart-enabled=true
-Categories=Utility;
-EOF
+  chmod +x "${BIN_DIR}/cloudbridge-open-or-default"
 }
 
 check_runtime_alt() {
   if ! command -v fusermount3 >/dev/null 2>&1; then
     warn "fusermount3 is not in PATH. FUSE mount may not work until fuse3 is installed correctly."
   fi
+}
 
-  if [[ -f /etc/fuse.conf ]] && ! grep -Eq '^\s*user_allow_other\s*$' /etc/fuse.conf; then
-    warn "allow_other may require enabling user_allow_other in /etc/fuse.conf"
+enable_fuse_allow_other() {
+  say "Enabling FUSE allow_other support"
+  if [[ ! -f /etc/fuse.conf ]]; then
+    sudo touch /etc/fuse.conf
+  fi
+
+  if sudo grep -Eq '^\s*user_allow_other\s*$' /etc/fuse.conf; then
+    return
+  fi
+
+  if sudo grep -Eq '^\s*#\s*user_allow_other\s*$' /etc/fuse.conf; then
+    sudo sed -i 's/^\s*#\s*user_allow_other\s*$/user_allow_other/' /etc/fuse.conf
+  else
+    printf 'user_allow_other\n' | sudo tee -a /etc/fuse.conf >/dev/null
   fi
 }
 
@@ -316,9 +292,9 @@ main() {
 
   create_venv
   write_config "${token}" "${remote_root}" "${local_path}"
-  install_filemanager_integration "${local_path}" "${remote_root}"
   install_launchers
-  install_tray_autostart
+  install_filemanager_integration "${local_path}" "${remote_root}"
+  enable_fuse_allow_other
 
   if [[ "${TARGET_OS}" == "alt" ]]; then
     check_runtime_alt
@@ -328,9 +304,8 @@ main() {
   printf 'Target OS: %s\n' "${TARGET_OS}"
   printf 'Config: %s\n' "${CONFIG_FILE}"
   printf 'Context menu: Thunar -> right click a file -> Open with CloudBridge / Store Locally / Restore to Cloud\n'
+  printf 'Double click: placeholder files open through CloudBridge automatically\n'
   printf 'Start watcher/daemon with: cloudbridge-start\n'
-  printf 'Start tray with: cloudbridge-tray\n'
-  printf 'Stop daemon with: cloudbridge-stop\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"
 
   if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
