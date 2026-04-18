@@ -22,30 +22,32 @@ NEXTCLOUD_USERNAME=""
 NEXTCLOUD_PASSWORD=""
 INSTALL_SERVICE=1
 ALLOW_ROOT=0
+NO_BROWSER=0
 
 usage() {
   cat <<'EOF'
-Usage: install-linux.sh [options]
+Использование: install-linux.sh [опции]
 
-Options:
-  --provider <name>         Cloud provider. Default: yandex
-  --token <token>           Yandex Disk token
-  --yandex-client-id <id>   Yandex OAuth application Client ID
-  --yandex-client-secret <s> Yandex OAuth application Client secret
-  --nextcloud-url <url>     Nextcloud server URL
-  --nextcloud-username <u>  Nextcloud username
-  --nextcloud-password <p>  Nextcloud app password
-  --sync-root <path>        Local sync root. Default: ~/CloudBridge
-  --import-root <path>      Remote import root for external files. Default: /incoming
-  --import-layout <layout>  External import layout: flat, by-parent, by-date. Default: flat
-  --manager <name>          File manager backend: auto, nautilus, thunar, nemo, caja. Default: auto
-  --service-name <name>     systemd --user service name. Default: cloudbridge
-  --skip-service            Do not install or enable the systemd user service
-  --allow-root              Allow installation into the root account (not recommended)
-  --install-root <path>     Venv install root. Default: ~/.local/share/cloudbridge/app
-  --app-home <path>         App state root. Default: ~/.local/share/cloudbridge
-  --wrapper-path <path>     Wrapper binary path. Default: ~/.local/bin/cloudbridge-local
-  --help                    Show this help
+Опции:
+  --provider <name>          Провайдер облака. По умолчанию: yandex
+  --token <token>            Токен Яндекс Диска
+  --yandex-client-id <id>    Client ID OAuth-приложения Яндекса
+  --yandex-client-secret <s> Client secret OAuth-приложения Яндекса
+  --nextcloud-url <url>      Адрес сервера Nextcloud
+  --nextcloud-username <u>   Имя пользователя Nextcloud
+  --nextcloud-password <p>   Пароль приложения Nextcloud
+  --sync-root <path>         Локальная папка синхронизации. По умолчанию: ~/CloudBridge
+  --import-root <path>       Облачная папка для внешнего импорта. По умолчанию: /incoming
+  --import-layout <layout>   Схема внешнего импорта: flat, by-parent, by-date. По умолчанию: flat
+  --manager <name>           Файловый менеджер: auto, nautilus, thunar, nemo, caja. По умолчанию: auto
+  --service-name <name>      Имя службы systemd --user. По умолчанию: cloudbridge
+  --skip-service             Не устанавливать и не включать пользовательскую службу systemd
+  --no-browser               Не пытаться открывать браузер автоматически во время входа
+  --allow-root               Разрешить установку в root-аккаунт (не рекомендуется)
+  --install-root <path>      Путь для venv. По умолчанию: ~/.local/share/cloudbridge/app
+  --app-home <path>          Корневая папка состояния приложения. По умолчанию: ~/.local/share/cloudbridge
+  --wrapper-path <path>      Путь к wrapper-скрипту. По умолчанию: ~/.local/bin/cloudbridge-local
+  --help                     Показать эту справку
 EOF
 }
 
@@ -103,6 +105,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_SERVICE=0
       shift
       ;;
+    --no-browser)
+      NO_BROWSER=1
+      shift
+      ;;
     --allow-root)
       ALLOW_ROOT=1
       shift
@@ -132,20 +138,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required" >&2
+  echo "Нужен установленный python3." >&2
   exit 1
 fi
 
 if [[ "$(id -u)" -eq 0 && "$ALLOW_ROOT" -ne 1 ]]; then
   cat >&2 <<'EOF'
-install-linux.sh is a per-user installer and should not be run as root.
+install-linux.sh рассчитан на установку для обычного пользователя и не должен запускаться от root.
 
-Why this matters:
-- file-manager integration would be installed into /root instead of your desktop user
-- systemd --user service would target the root account
-- GUI and right-click actions would not appear for your regular user session
+Почему это важно:
+- интеграция с файловым менеджером установится в /root, а не в вашу обычную сессию
+- служба systemd --user будет создана для root
+- GUI и пункты в контекстном меню не появятся у обычного пользователя
 
-Run it as your normal desktop user, or pass --allow-root only if you really want a root-local install.
+Запустите installer от своего desktop-пользователя либо передайте --allow-root, только если вам действительно нужна отдельная root-установка.
 EOF
   exit 1
 fi
@@ -155,28 +161,28 @@ import sqlite3
 PY
 then
   cat >&2 <<'EOF'
-python3 is missing the standard sqlite3 module.
+В python3 отсутствует стандартный модуль sqlite3.
 
-CloudBridge requires sqlite3 because the local state database is built on SQLite.
+CloudBridge использует SQLite для локальной базы состояния, поэтому без sqlite3 приложение не запустится.
 
-On ALT Linux install the package that provides this module first, for example:
+На ALT Linux сначала установите пакет с этим модулем, например:
   apt-get install python3-modules-sqlite3
 EOF
   exit 1
 fi
 
 if [[ "$PROVIDER" == "yandex" && -z "$TOKEN" && ( -z "$YANDEX_CLIENT_ID" || -z "$YANDEX_CLIENT_SECRET" ) ]]; then
-  echo "provider=yandex requires either --token or both --yandex-client-id and --yandex-client-secret" >&2
+  echo "Для provider=yandex нужен либо --token, либо одновременно --yandex-client-id и --yandex-client-secret." >&2
   exit 1
 fi
 
 if [[ "$PROVIDER" == "nextcloud" && -z "$NEXTCLOUD_URL" ]]; then
-  echo "--nextcloud-url is required for provider=nextcloud" >&2
+  echo "Для provider=nextcloud нужно указать --nextcloud-url." >&2
   exit 1
 fi
 
 if [[ "$PROVIDER" == "nextcloud" && ( ( -n "$NEXTCLOUD_USERNAME" && -z "$NEXTCLOUD_PASSWORD" ) || ( -z "$NEXTCLOUD_USERNAME" && -n "$NEXTCLOUD_PASSWORD" ) ) ]]; then
-  echo "--nextcloud-username and --nextcloud-password must be provided together" >&2
+  echo "--nextcloud-username и --nextcloud-password нужно передавать вместе." >&2
   exit 1
 fi
 
@@ -239,11 +245,39 @@ EOF
 chmod +x "$WRAPPER_PATH"
 
 if [[ "$PROVIDER" == "yandex" && -z "$TOKEN" && -n "$YANDEX_CLIENT_ID" && -n "$YANDEX_CLIENT_SECRET" ]]; then
-  "$WRAPPER_PATH" setup-yandex --client-id "$YANDEX_CLIENT_ID" --client-secret "$YANDEX_CLIENT_SECRET"
+  YANDEX_SETUP_ARGS=(setup-yandex --client-id "$YANDEX_CLIENT_ID" --client-secret "$YANDEX_CLIENT_SECRET")
+  if [[ "$NO_BROWSER" -eq 1 ]]; then
+    YANDEX_SETUP_ARGS+=(--no-browser)
+  fi
+  if ! "$WRAPPER_PATH" "${YANDEX_SETUP_ARGS[@]}"; then
+    cat >&2 <<'EOF'
+Не удалось завершить вход в Яндекс.
+
+Проверьте:
+- Client ID и Client secret взяты из одного и того же OAuth-приложения
+- secret не был перевыпущен после того, как вы его скопировали
+- при проблемах с браузером в виртуальной машине попробуйте повторить установку с флагом --no-browser
+EOF
+    exit 1
+  fi
 fi
 
 if [[ "$PROVIDER" == "nextcloud" && -n "$NEXTCLOUD_URL" && ( -z "$NEXTCLOUD_USERNAME" || -z "$NEXTCLOUD_PASSWORD" ) ]]; then
-  "$WRAPPER_PATH" setup-nextcloud --server "$NEXTCLOUD_URL"
+  NEXTCLOUD_SETUP_ARGS=(setup-nextcloud --server "$NEXTCLOUD_URL")
+  if [[ "$NO_BROWSER" -eq 1 ]]; then
+    NEXTCLOUD_SETUP_ARGS+=(--no-browser)
+  fi
+  if ! "$WRAPPER_PATH" "${NEXTCLOUD_SETUP_ARGS[@]}"; then
+    cat >&2 <<'EOF'
+Не удалось завершить вход в Nextcloud.
+
+Проверьте:
+- адрес сервера указан полностью, включая https://
+- браузер смог открыть страницу входа
+- если в виртуальной машине есть проблемы с браузером, повторите установку с флагом --no-browser
+EOF
+    exit 1
+  fi
 fi
 
 DESKTOP_SETUP_ARGS=(desktop-setup --manager "$MANAGER" --launcher-command "$WRAPPER_PATH" --service-name "$SERVICE_NAME")
@@ -293,5 +327,5 @@ fi
 
 cat <<EOF
 
-Make sure ~/.local/bin is in PATH.
+Убедитесь, что ~/.local/bin добавлен в PATH.
 EOF

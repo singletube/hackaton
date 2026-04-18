@@ -220,10 +220,10 @@ async def run(args: argparse.Namespace) -> int:
         client_id = (args.client_id or config.yandex_client_id or "").strip()
         client_secret = (args.client_secret or config.yandex_client_secret or "").strip()
         if not client_id or not client_secret:
-            raise ValueError("Yandex device login requires --client-id and --client-secret, or saved YANDEX_CLIENT_ID / YANDEX_CLIENT_SECRET.")
+            raise ValueError("Для входа в Яндекс нужны --client-id и --client-secret либо сохраненные YANDEX_CLIENT_ID / YANDEX_CLIENT_SECRET.")
 
         def handle_yandex_ready(prompt) -> None:
-            print("action=Open the verification URL and enter the user_code shown below. The code is not sent by Yandex in email or SMS.")
+            print("action=Откройте verification_url и введите user_code ниже. Яндекс не присылает этот код письмом или по SMS.")
             print(f"verification_url={prompt.verification_url}")
             print(f"user_code={prompt.user_code}")
             print(f"browser_opened={str(prompt.browser_opened).lower()}")
@@ -240,7 +240,7 @@ async def run(args: argparse.Namespace) -> int:
         provider = YandexDiskProvider(result.access_token)
         try:
             if await provider.stat("/") is None:
-                raise RuntimeError("Yandex login completed, but the Disk root is not accessible.")
+                raise RuntimeError("Вход в Яндекс выполнен, но корень Диска недоступен.")
         finally:
             await provider.close()
 
@@ -257,7 +257,7 @@ async def run(args: argparse.Namespace) -> int:
 
     if args.command == "setup-nextcloud":
         def handle_nextcloud_ready(prompt) -> None:
-            print("action=Open the login_url in a browser and complete the Nextcloud approval flow there.")
+            print("action=Откройте login_url в браузере и завершите подтверждение входа в Nextcloud.")
             print(f"login_url={prompt.login_url}")
             print(f"browser_opened={str(prompt.browser_opened).lower()}")
 
@@ -271,7 +271,7 @@ async def run(args: argparse.Namespace) -> int:
         provider = NextcloudProvider(result.server_url, result.login_name, result.app_password)
         try:
             if await provider.stat("/") is None:
-                raise RuntimeError("Nextcloud login completed, but the WebDAV root is not accessible.")
+                raise RuntimeError("Вход в Nextcloud выполнен, но корень WebDAV недоступен.")
         finally:
             await provider.close()
 
@@ -366,7 +366,7 @@ async def run(args: argparse.Namespace) -> int:
         if manager_name == "auto":
             detected = detect_file_manager()
             if detected is None:
-                raise RuntimeError("Could not detect a supported file manager. Use --manager nautilus, thunar, nemo, or caja.")
+                raise RuntimeError("Не удалось определить поддерживаемый файловый менеджер. Укажите --manager nautilus, thunar, nemo или caja.")
             manager_name = detected
         if manager_name == "nautilus":
             result = install_nautilus_integration(
@@ -441,7 +441,7 @@ async def run(args: argparse.Namespace) -> int:
             if manager_name == "auto":
                 detected = detect_file_manager()
                 if detected is None:
-                    raise RuntimeError("Could not detect a supported file manager. Use --manager nautilus, thunar, nemo, or caja.")
+                    raise RuntimeError("Не удалось определить поддерживаемый файловый менеджер. Укажите --manager nautilus, thunar, nemo или caja.")
                 manager_name = detected
             if manager_name == "nautilus":
                 result = install_nautilus_integration(
@@ -556,8 +556,8 @@ async def run(args: argparse.Namespace) -> int:
                 except FileNotFoundError as error:
                     if Path(raw_path).expanduser().is_absolute() and requested_path == raw_path:
                         raise FileNotFoundError(
-                            f"{raw_path} is not inside sync root {config.sync_root} and is not a cloud path. "
-                            "Use a virtual path like /codex-test/turtle.jpeg or a local path inside the sync root."
+                            f"{raw_path} не находится внутри папки синхронизации {config.sync_root} и не является облачным путем. "
+                            "Используйте виртуальный путь вида /codex-test/turtle.jpeg или локальный путь внутри папки синхронизации."
                         ) from error
                     raise
                 print(requested_path)
@@ -570,8 +570,8 @@ async def run(args: argparse.Namespace) -> int:
                 except FileNotFoundError as error:
                     if Path(raw_path).expanduser().is_absolute() and requested_path == raw_path:
                         raise FileNotFoundError(
-                            f"{raw_path} is not inside sync root {config.sync_root} and is not a cloud path. "
-                            "Use a virtual path like /codex-test/turtle.jpeg or a local path inside the sync root."
+                            f"{raw_path} не находится внутри папки синхронизации {config.sync_root} и не является облачным путем. "
+                            "Используйте виртуальный путь вида /codex-test/turtle.jpeg или локальный путь внутри папки синхронизации."
                         ) from error
                     raise
                 print(requested_path)
@@ -602,7 +602,7 @@ async def run(args: argparse.Namespace) -> int:
                 copied = copy_text_to_clipboard(url)
                 print(f"clipboard={str(copied).lower()}")
                 if copied:
-                    send_desktop_notification("CloudBridge", "Public link copied to clipboard.")
+                    send_desktop_notification("CloudBridge", "Публичная ссылка скопирована в буфер обмена.")
             return 0
         if args.command == "share-selected":
             urls: list[str] = []
@@ -614,7 +614,7 @@ async def run(args: argparse.Namespace) -> int:
                 copied = copy_text_to_clipboard("\n".join(urls))
                 print(f"clipboard={str(copied).lower()}")
                 if copied:
-                    send_desktop_notification("CloudBridge", "Public links copied to clipboard.")
+                    send_desktop_notification("CloudBridge", "Публичные ссылки скопированы в буфер обмена.")
             return 0
         if args.command == "queue":
             if args.queue_command == "upload":

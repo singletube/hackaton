@@ -83,6 +83,21 @@ cloudbridge-local setup-yandex \
   --client-secret "YANDEX_CLIENT_SECRET"
 ```
 
+If your Linux guest browser is unstable or crashes inside a VM, you can disable auto-open during install:
+
+```bash
+./scripts/install-linux.sh \
+  --provider yandex \
+  --yandex-client-id "YANDEX_CLIENT_ID" \
+  --yandex-client-secret "YANDEX_CLIENT_SECRET" \
+  --sync-root "$HOME/CloudBridge" \
+  --manager auto \
+  --no-browser
+```
+
+If Yandex returns `Wrong client secret`, this usually means the `Client ID` and `Client secret`
+do not belong to the same OAuth app or the secret was regenerated after it was copied.
+
 ## Nextcloud Install
 
 For Nextcloud, the easiest path is browser-based login with an app password:
@@ -107,6 +122,17 @@ If your browser does not open automatically, run the setup manually after instal
 
 ```bash
 cloudbridge-local setup-nextcloud --server "https://cloud.example.com"
+```
+
+The same workaround is available during install:
+
+```bash
+./scripts/install-linux.sh \
+  --provider nextcloud \
+  --nextcloud-url "https://cloud.example.com" \
+  --sync-root "$HOME/CloudBridge" \
+  --manager auto \
+  --no-browser
 ```
 
 ## Options
@@ -197,8 +223,8 @@ For local files outside the sync root, the share action uploads the file first a
 
 On Thunar, Nemo, and Caja action backends, CloudBridge also installs:
 
-- `Download from Cloud`
-- `Free Local Space`
+- `Скачать из облака`
+- `Освободить место на диске`
 
 These two actions are intended for files inside the CloudBridge sync root.
 

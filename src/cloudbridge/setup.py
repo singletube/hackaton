@@ -60,7 +60,7 @@ async def run_nextcloud_login_flow(
         async with session.post(f"{base_url}/index.php/login/v2", headers={"Accept": "application/json"}) as response:
             if response.status not in {200, 201}:
                 text = await response.text()
-                raise RuntimeError(f"Nextcloud login flow init failed with status {response.status}: {text}")
+                raise RuntimeError(f"Не удалось запустить вход в Nextcloud: HTTP {response.status}: {text}")
             payload = await response.json(content_type=None)
 
         login_url = str(payload.get("login") or "").strip()
@@ -68,7 +68,7 @@ async def run_nextcloud_login_flow(
         poll_endpoint = str(poll.get("endpoint") or "").strip()
         token = str(poll.get("token") or "").strip()
         if not login_url or not poll_endpoint or not token:
-            raise RuntimeError(f"Unexpected Nextcloud login flow payload: {payload!r}")
+            raise RuntimeError(f"Nextcloud вернул неожиданный ответ при запуске входа: {payload!r}")
 
         browser_opened = False
         if open_browser:
@@ -95,7 +95,7 @@ async def run_nextcloud_login_flow(
                     app_password = str(credentials.get("appPassword") or "").strip()
                     resolved_server_url = str(credentials.get("server") or base_url).rstrip("/")
                     if not login_name or not app_password:
-                        raise RuntimeError(f"Unexpected Nextcloud login credentials payload: {credentials!r}")
+                        raise RuntimeError(f"Nextcloud вернул неполные учетные данные приложения: {credentials!r}")
                     return NextcloudLoginResult(
                         server_url=resolved_server_url,
                         login_name=login_name,
@@ -105,9 +105,9 @@ async def run_nextcloud_login_flow(
                     )
                 if response.status not in {202, 404}:
                     text = await response.text()
-                    raise RuntimeError(f"Nextcloud login flow poll failed with status {response.status}: {text}")
+                    raise RuntimeError(f"Не удалось дождаться подтверждения входа в Nextcloud: HTTP {response.status}: {text}")
             if asyncio.get_running_loop().time() >= deadline:
-                raise TimeoutError("Timed out while waiting for Nextcloud login confirmation.")
+                raise TimeoutError("Истекло время ожидания подтверждения входа в Nextcloud.")
             await asyncio.sleep(max(0.2, poll_interval))
 
 
@@ -136,7 +136,7 @@ async def run_yandex_device_login_flow(
         async with session.post(f"{oauth_base}/device/code", data=init_payload) as response:
             if response.status != 200:
                 text = await response.text()
-                raise RuntimeError(f"Yandex device flow init failed with status {response.status}: {text}")
+                raise RuntimeError(f"Не удалось запустить вход в Яндекс по коду устройства: HTTP {response.status}: {text}")
             payload = await response.json(content_type=None)
 
         device_code = str(payload.get("device_code") or "").strip()
@@ -145,7 +145,7 @@ async def run_yandex_device_login_flow(
         interval = max(1, int(payload.get("interval") or 5))
         expires_in = _coerce_int(payload.get("expires_in"))
         if not device_code or not user_code or not verification_url:
-            raise RuntimeError(f"Unexpected Yandex device flow payload: {payload!r}")
+            raise RuntimeError(f"Яндекс вернул неожиданный ответ при запуске входа: {payload!r}")
 
         browser_opened = False
         if open_browser:
@@ -179,7 +179,7 @@ async def run_yandex_device_login_flow(
                 if response.status == 200:
                     access_token = str(payload.get("access_token") or "").strip()
                     if not access_token:
-                        raise RuntimeError(f"Unexpected Yandex token payload: {payload!r}")
+                        raise RuntimeError(f"Яндекс вернул неожиданный ответ при получении токена: {payload!r}")
                     refresh_token = str(payload.get("refresh_token") or "").strip() or None
                     scope_value = str(payload.get("scope") or "").strip() or scope
                     return YandexDeviceLoginResult(
@@ -195,10 +195,10 @@ async def run_yandex_device_login_flow(
                 error_code = str(payload.get("error") or "").strip()
                 if error_code == "authorization_pending":
                     if asyncio.get_running_loop().time() >= deadline:
-                        raise TimeoutError("Timed out while waiting for Yandex device authorization.")
+                        raise TimeoutError("Истекло время ожидания подтверждения входа в Яндекс.")
                     await asyncio.sleep(interval)
                     continue
-                message = str(payload.get("error_description") or payload.get("error") or "Yandex device login failed.")
+                message = _format_yandex_device_error(payload)
                 raise RuntimeError(message)
 
 
@@ -207,3 +207,16 @@ def _coerce_int(value: object) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _format_yandex_device_error(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return "Не удалось выполнить вход в Яндекс по коду устройства."
+    error_code = str(payload.get("error") or "").strip()
+    error_description = str(payload.get("error_description") or "").strip()
+    if error_code == "invalid_client" or error_description.lower() == "wrong client secret":
+        return (
+            "Яндекс отклонил данные OAuth-приложения. Проверьте, что Client ID и Client secret "
+            "взяты из одного и того же приложения и что secret не был перевыпущен после копирования."
+        )
+    return error_description or error_code or "Не удалось выполнить вход в Яндекс по коду устройства."

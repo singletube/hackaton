@@ -118,22 +118,22 @@ def test_render_nautilus_extension_binds_launcher_and_actions(tmp_path: Path) ->
     assert "Nautilus.InfoProvider" in content
     assert "DATABASE_PATH =" in content
     assert "cloudbridge::sync-state" in content
-    assert "label=\"Upload to Cloud\"" in content
-    assert "label=\"Download from Cloud\"" in content
-    assert "label=\"Free Local Space\"" in content
-    assert "label=\"Copy Public Link\"" in content
+    assert "label=\"Загрузить в облако\"" in content
+    assert "label=\"Скачать из облака\"" in content
+    assert "label=\"Освободить место на диске\"" in content
+    assert "label=\"Скопировать публичную ссылку\"" in content
 
 
 def test_render_thunar_uca_xml_binds_upload_action(tmp_path: Path) -> None:
     content = render_thunar_uca_xml(tmp_path / "cloudbridge-thunar")
 
-    assert "<name>CloudBridge Upload to Cloud</name>" in content
+    assert "<name>CloudBridge Загрузить в облако</name>" in content
     assert "upload-selected %F" in content
-    assert "<name>CloudBridge Copy Public Link</name>" in content
+    assert "<name>CloudBridge Скопировать публичную ссылку</name>" in content
     assert "share-selected --copy %F" in content
-    assert "<name>CloudBridge Download from Cloud</name>" in content
+    assert "<name>CloudBridge Скачать из облака</name>" in content
     assert "download %F" in content
-    assert "<name>CloudBridge Free Local Space</name>" in content
+    assert "<name>CloudBridge Освободить место на диске</name>" in content
     assert "dehydrate %F" in content
     assert "cloudbridge-managed" in content
 
@@ -143,6 +143,7 @@ def test_render_nemo_action_binds_upload_action(tmp_path: Path) -> None:
 
     assert "[Nemo Action]" in content
     assert "upload-selected %F" in content
+    assert "Загрузить в облако" in content
     assert "Selection=notnone" in content
 
 
@@ -151,7 +152,7 @@ def test_render_nemo_share_action_binds_share_action(tmp_path: Path) -> None:
 
     assert "[Nemo Action]" in content
     assert "share-selected --copy %F" in content
-    assert "Copy Public Link" in content
+    assert "Скопировать публичную ссылку" in content
 
 
 def test_render_nemo_download_action_binds_download_action(tmp_path: Path) -> None:
@@ -159,7 +160,7 @@ def test_render_nemo_download_action_binds_download_action(tmp_path: Path) -> No
 
     assert "[Nemo Action]" in content
     assert "download %F" in content
-    assert "Download from Cloud" in content
+    assert "Скачать из облака" in content
 
 
 def test_render_nemo_dehydrate_action_binds_dehydrate_action(tmp_path: Path) -> None:
@@ -167,7 +168,7 @@ def test_render_nemo_dehydrate_action_binds_dehydrate_action(tmp_path: Path) -> 
 
     assert "[Nemo Action]" in content
     assert "dehydrate %F" in content
-    assert "Free Local Space" in content
+    assert "Освободить место на диске" in content
 
 
 def test_render_caja_action_desktop_binds_upload_action(tmp_path: Path) -> None:
@@ -176,6 +177,7 @@ def test_render_caja_action_desktop_binds_upload_action(tmp_path: Path) -> None:
     assert "[Desktop Entry]" in content
     assert "Type=Action" in content
     assert "upload-selected %F" in content
+    assert "Загрузить в облако" in content
 
 
 def test_render_caja_share_action_desktop_binds_share_action(tmp_path: Path) -> None:
@@ -184,6 +186,7 @@ def test_render_caja_share_action_desktop_binds_share_action(tmp_path: Path) -> 
     assert "[Desktop Entry]" in content
     assert "Type=Action" in content
     assert "share-selected --copy %F" in content
+    assert "Скопировать публичную ссылку" in content
 
 
 def test_render_caja_download_action_desktop_binds_download_action(tmp_path: Path) -> None:
@@ -192,6 +195,7 @@ def test_render_caja_download_action_desktop_binds_download_action(tmp_path: Pat
     assert "[Desktop Entry]" in content
     assert "Type=Action" in content
     assert "download %F" in content
+    assert "Скачать из облака" in content
 
 
 def test_render_caja_dehydrate_action_desktop_binds_dehydrate_action(tmp_path: Path) -> None:
@@ -200,6 +204,7 @@ def test_render_caja_dehydrate_action_desktop_binds_dehydrate_action(tmp_path: P
     assert "[Desktop Entry]" in content
     assert "Type=Action" in content
     assert "dehydrate %F" in content
+    assert "Освободить место на диске" in content
 
 
 def test_render_caja_extension_binds_launcher_and_actions(tmp_path: Path) -> None:
@@ -209,10 +214,10 @@ def test_render_caja_extension_binds_launcher_and_actions(tmp_path: Path) -> Non
     assert "Caja.InfoProvider" in content
     assert "DATABASE_PATH =" in content
     assert "cloudbridge::sync-state" in content
-    assert "label=\"Upload to Cloud\"" in content
-    assert "label=\"Download from Cloud\"" in content
-    assert "label=\"Free Local Space\"" in content
-    assert "label=\"Copy Public Link\"" in content
+    assert "label=\"Загрузить в облако\"" in content
+    assert "label=\"Скачать из облака\"" in content
+    assert "label=\"Освободить место на диске\"" in content
+    assert "label=\"Скопировать публичную ссылку\"" in content
 
 
 def test_install_nautilus_integration_writes_files(tmp_path: Path) -> None:

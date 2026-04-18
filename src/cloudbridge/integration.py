@@ -221,23 +221,23 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.I
         root_item = Nautilus.MenuItem(
             name="CloudBridgeMenuProvider::root",
             label="CloudBridge",
-            tip="CloudBridge actions",
+            tip="Команды CloudBridge",
         )
         submenu = Nautilus.Menu()
         root_item.set_submenu(submenu)
 
         upload_item = Nautilus.MenuItem(
             name="CloudBridgeMenuProvider::upload",
-            label="Upload to Cloud",
-            tip="Upload selected files to CloudBridge",
+            label="Загрузить в облако",
+            tip="Загрузить выбранные файлы в CloudBridge",
         )
         upload_item.connect("activate", self._activate_upload, files)
         submenu.append_item(upload_item)
 
         share_item = Nautilus.MenuItem(
             name="CloudBridgeMenuProvider::share",
-            label="Copy Public Link",
-            tip="Create or reuse a public share link and copy it to the clipboard",
+            label="Скопировать публичную ссылку",
+            tip="Создать или переиспользовать публичную ссылку и скопировать ее в буфер обмена",
         )
         share_item.connect("activate", self._activate_share, files)
         submenu.append_item(share_item)
@@ -245,16 +245,16 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.I
         if sync_paths:
             download_item = Nautilus.MenuItem(
                 name="CloudBridgeMenuProvider::download",
-                label="Download from Cloud",
-                tip="Replace placeholders with full local files",
+                label="Скачать из облака",
+                tip="Заменить заглушки полноценными локальными файлами",
             )
             download_item.connect("activate", self._activate_download, files)
             submenu.append_item(download_item)
 
             dehydrate_item = Nautilus.MenuItem(
                 name="CloudBridgeMenuProvider::dehydrate",
-                label="Free Local Space",
-                tip="Turn local files back into placeholders",
+                label="Освободить место на диске",
+                tip="Превратить локальные файлы обратно в заглушки",
             )
             dehydrate_item.connect("activate", self._activate_dehydrate, files)
             submenu.append_item(dehydrate_item)
@@ -404,23 +404,23 @@ class CloudBridgeCajaProvider(GObject.GObject, Caja.MenuProvider, Caja.InfoProvi
         root_item = Caja.MenuItem(
             name="CloudBridgeCajaProvider::root",
             label="CloudBridge",
-            tip="CloudBridge actions",
+            tip="Команды CloudBridge",
         )
         submenu = Caja.Menu()
         root_item.set_submenu(submenu)
 
         upload_item = Caja.MenuItem(
             name="CloudBridgeCajaProvider::upload",
-            label="Upload to Cloud",
-            tip="Upload selected files to CloudBridge",
+            label="Загрузить в облако",
+            tip="Загрузить выбранные файлы в CloudBridge",
         )
         upload_item.connect("activate", self._activate_upload, files)
         submenu.append_item(upload_item)
 
         share_item = Caja.MenuItem(
             name="CloudBridgeCajaProvider::share",
-            label="Copy Public Link",
-            tip="Create or reuse a public share link and copy it to the clipboard",
+            label="Скопировать публичную ссылку",
+            tip="Создать или переиспользовать публичную ссылку и скопировать ее в буфер обмена",
         )
         share_item.connect("activate", self._activate_share, files)
         submenu.append_item(share_item)
@@ -428,16 +428,16 @@ class CloudBridgeCajaProvider(GObject.GObject, Caja.MenuProvider, Caja.InfoProvi
         if sync_paths:
             download_item = Caja.MenuItem(
                 name="CloudBridgeCajaProvider::download",
-                label="Download from Cloud",
-                tip="Replace placeholders with full local files",
+                label="Скачать из облака",
+                tip="Заменить заглушки полноценными локальными файлами",
             )
             download_item.connect("activate", self._activate_download, files)
             submenu.append_item(download_item)
 
             dehydrate_item = Caja.MenuItem(
                 name="CloudBridgeCajaProvider::dehydrate",
-                label="Free Local Space",
-                tip="Turn local files back into placeholders",
+                label="Освободить место на диске",
+                tip="Превратить локальные файлы обратно в заглушки",
             )
             dehydrate_item.connect("activate", self._activate_dehydrate, files)
             submenu.append_item(dehydrate_item)
@@ -468,34 +468,34 @@ def render_thunar_uca_xml(launcher_path: Path, existing_xml: str | None = None) 
     _append_thunar_action(
         root,
         icon="folder-remote",
-        name="CloudBridge Upload to Cloud",
+        name="CloudBridge Загрузить в облако",
         unique_id="cloudbridge-upload-to-cloud",
         command=f"{shlex.quote(str(launcher_path))} upload-selected %F",
-        description="Upload selected files to CloudBridge [cloudbridge-managed]",
+        description="Загрузить выбранные файлы в CloudBridge [cloudbridge-managed]",
     )
     _append_thunar_action(
         root,
         icon="emblem-shared",
-        name="CloudBridge Copy Public Link",
+        name="CloudBridge Скопировать публичную ссылку",
         unique_id="cloudbridge-copy-public-link",
         command=f"{shlex.quote(str(launcher_path))} share-selected --copy %F",
-        description="Create or reuse a public CloudBridge link [cloudbridge-managed]",
+        description="Создать или переиспользовать публичную ссылку CloudBridge [cloudbridge-managed]",
     )
     _append_thunar_action(
         root,
         icon="emblem-downloads",
-        name="CloudBridge Download from Cloud",
+        name="CloudBridge Скачать из облака",
         unique_id="cloudbridge-download-from-cloud",
         command=f"{shlex.quote(str(launcher_path))} download %F",
-        description="Replace CloudBridge placeholders with full local files [cloudbridge-managed]",
+        description="Заменить заглушки CloudBridge полноценными локальными файлами [cloudbridge-managed]",
     )
     _append_thunar_action(
         root,
         icon="user-trash",
-        name="CloudBridge Free Local Space",
+        name="CloudBridge Освободить место на диске",
         unique_id="cloudbridge-free-local-space",
         command=f"{shlex.quote(str(launcher_path))} dehydrate %F",
-        description="Turn local CloudBridge files back into placeholders [cloudbridge-managed]",
+        description="Превратить локальные файлы CloudBridge обратно в заглушки [cloudbridge-managed]",
     )
 
     tree = ElementTree.ElementTree(root)
@@ -507,8 +507,8 @@ def render_nemo_action(launcher_path: Path) -> str:
     return (
         "[Nemo Action]\n"
         "Active=true\n"
-        "Name=CloudBridge Upload to Cloud\n"
-        "Comment=Upload selected files to CloudBridge\n"
+        "Name=CloudBridge Загрузить в облако\n"
+        "Comment=Загрузить выбранные файлы в CloudBridge\n"
         f"Exec={shlex.quote(str(launcher_path))} upload-selected %F\n"
         "Icon-Name=folder-remote\n"
         "Selection=notnone\n"
@@ -522,8 +522,8 @@ def render_nemo_share_action(launcher_path: Path) -> str:
     return (
         "[Nemo Action]\n"
         "Active=true\n"
-        "Name=CloudBridge Copy Public Link\n"
-        "Comment=Create or reuse a public CloudBridge link\n"
+        "Name=CloudBridge Скопировать публичную ссылку\n"
+        "Comment=Создать или переиспользовать публичную ссылку CloudBridge\n"
         f"Exec={shlex.quote(str(launcher_path))} share-selected --copy %F\n"
         "Icon-Name=emblem-shared\n"
         "Selection=notnone\n"
@@ -537,8 +537,8 @@ def render_nemo_download_action(launcher_path: Path) -> str:
     return (
         "[Nemo Action]\n"
         "Active=true\n"
-        "Name=CloudBridge Download from Cloud\n"
-        "Comment=Replace CloudBridge placeholders with full local files\n"
+        "Name=CloudBridge Скачать из облака\n"
+        "Comment=Заменить заглушки CloudBridge полноценными локальными файлами\n"
         f"Exec={shlex.quote(str(launcher_path))} download %F\n"
         "Icon-Name=emblem-downloads\n"
         "Selection=notnone\n"
@@ -552,8 +552,8 @@ def render_nemo_dehydrate_action(launcher_path: Path) -> str:
     return (
         "[Nemo Action]\n"
         "Active=true\n"
-        "Name=CloudBridge Free Local Space\n"
-        "Comment=Turn local CloudBridge files back into placeholders\n"
+        "Name=CloudBridge Освободить место на диске\n"
+        "Comment=Превратить локальные файлы CloudBridge обратно в заглушки\n"
         f"Exec={shlex.quote(str(launcher_path))} dehydrate %F\n"
         "Icon-Name=user-trash\n"
         "Selection=notnone\n"
@@ -567,8 +567,8 @@ def render_caja_action_desktop(launcher_path: Path) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Action\n"
-        "Name=CloudBridge Upload to Cloud\n"
-        "Tooltip=Upload selected files to CloudBridge\n"
+        "Name=CloudBridge Загрузить в облако\n"
+        "Tooltip=Загрузить выбранные файлы в CloudBridge\n"
         "Icon=folder-remote\n"
         "Profiles=profile-zero;\n"
         "\n"
@@ -584,8 +584,8 @@ def render_caja_share_action_desktop(launcher_path: Path) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Action\n"
-        "Name=CloudBridge Copy Public Link\n"
-        "Tooltip=Create or reuse a public CloudBridge link\n"
+        "Name=CloudBridge Скопировать публичную ссылку\n"
+        "Tooltip=Создать или переиспользовать публичную ссылку CloudBridge\n"
         "Icon=emblem-shared\n"
         "Profiles=profile-zero;\n"
         "\n"
@@ -601,8 +601,8 @@ def render_caja_download_action_desktop(launcher_path: Path) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Action\n"
-        "Name=CloudBridge Download from Cloud\n"
-        "Tooltip=Replace CloudBridge placeholders with full local files\n"
+        "Name=CloudBridge Скачать из облака\n"
+        "Tooltip=Заменить заглушки CloudBridge полноценными локальными файлами\n"
         "Icon=emblem-downloads\n"
         "Profiles=profile-zero;\n"
         "\n"
@@ -618,8 +618,8 @@ def render_caja_dehydrate_action_desktop(launcher_path: Path) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Action\n"
-        "Name=CloudBridge Free Local Space\n"
-        "Tooltip=Turn local CloudBridge files back into placeholders\n"
+        "Name=CloudBridge Освободить место на диске\n"
+        "Tooltip=Превратить локальные файлы CloudBridge обратно в заглушки\n"
         "Icon=user-trash\n"
         "Profiles=profile-zero;\n"
         "\n"

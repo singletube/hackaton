@@ -69,6 +69,21 @@ chmod +x scripts/install-linux.sh
 а в графическом окне CloudBridge он показывается в правой панели авторизации и печатается в stdout
 как `auth_code=...`.
 
+Если в виртуальной машине браузер ведет себя нестабильно, installer можно запустить без автооткрытия браузера:
+
+```bash
+./scripts/install-linux.sh \
+  --provider yandex \
+  --yandex-client-id "YANDEX_CLIENT_ID" \
+  --yandex-client-secret "YANDEX_CLIENT_SECRET" \
+  --sync-root "$HOME/CloudBridge" \
+  --manager auto \
+  --no-browser
+```
+
+Если Яндекс отвечает `Wrong client secret`, это обычно означает, что `Client ID` и `Client secret`
+взяты не из одного и того же OAuth-приложения либо secret был перевыпущен после копирования.
+
 ### Вариант для Nextcloud
 
 ```bash
@@ -79,6 +94,8 @@ chmod +x scripts/install-linux.sh
   --sync-root "$HOME/CloudBridge" \
   --manager auto
 ```
+
+При проблемах с автооткрытием браузера можно так же добавить `--no-browser`.
 
 ## 4. Проверить, что wrapper доступен
 
