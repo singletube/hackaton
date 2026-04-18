@@ -136,7 +136,7 @@ main() {
 
   say "Setup complete"
   printf 'Config: %s\n' "${CONFIG_FILE}"
-  printf 'Context menu: Thunar -> right click a file -> Open with CloudBridge / Store Locally / Restore to Cloud\n'
+  printf 'Context menu: Thunar -> right click a file -> CloudBridge actions\n'
   printf 'Start watcher/daemon with: cloudbridge-start\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"
 
