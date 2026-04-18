@@ -148,9 +148,13 @@ async def open_or_default(input_path: str):
     remote_path = _placeholder_remote_path(path)
     if remote_path:
         logger.info("Opening CloudBridge placeholder %s -> %s", path, remote_path)
-        from .cloud_open import open_cloud_file
+        from .cloud_open import open_cloud_file, show_error_dialog
 
-        await open_cloud_file(remote_path, command=None, wait_for_enter=False, keep_unchanged=False)
+        try:
+            await open_cloud_file(remote_path, command=None, wait_for_enter=False, keep_unchanged=False)
+        except Exception as exc:
+            show_error_dialog(str(exc))
+            raise
         return
 
     _open_default(path)

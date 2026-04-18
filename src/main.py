@@ -26,6 +26,7 @@ try:
         CACHE_DIR = os.getenv("CLOUDBRIDGE_CACHE_DIR", "/tmp/cache")
         MOUNT_POINT = os.getenv("MOUNT_POINT", "/tmp/yandex_mount")
         MIRROR_DIR = os.getenv("LOCAL_PATH", "/tmp/yandex_mirror")
+        REMOTE_POLL_INTERVAL = float(os.getenv("CLOUDBRIDGE_REMOTE_POLL_INTERVAL", "60"))
 
         logger.info("Starting CloudBridge selective sync for path: %s", REMOTE_ROOT)
 
@@ -51,6 +52,7 @@ try:
             logger.info("Initializing remote structure for %s...", REMOTE_ROOT)
             await provider.create_directory(REMOTE_ROOT)
             await manager.sync_directory(REMOTE_ROOT)
+            await manager.materialize_remote_placeholders(MIRROR_DIR)
             if os.getenv("BOOTSTRAP_LOCAL") == "1":
                 await manager.bootstrap_local_sync(MIRROR_DIR)
             if os.getenv("PRUNE_REMOTE") == "1":
@@ -93,19 +95,39 @@ try:
                 except Exception as e:
                     logger.exception("Watcher task failed")
 
+            async def run_remote_poll():
+                if REMOTE_POLL_INTERVAL <= 0:
+                    logger.info("Remote polling is disabled")
+                    return
+                logger.info("Remote polling started, interval=%ss", REMOTE_POLL_INTERVAL)
+                try:
+                    while True:
+                        await asyncio.sleep(REMOTE_POLL_INTERVAL)
+                        try:
+                            await manager.materialize_remote_placeholders(MIRROR_DIR)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.exception("Remote poll failed")
+                except asyncio.CancelledError:
+                    logger.info("Remote polling stopped")
+                    raise
+
             fuse_task = asyncio.create_task(run_fuse())
             watcher_task = asyncio.create_task(run_watcher())
+            remote_poll_task = asyncio.create_task(run_remote_poll())
             
             def shutdown_signal():
                 logger.info("Shutdown signal received")
                 fuse_task.cancel()
                 watcher_task.cancel()
+                remote_poll_task.cancel()
                 
             for s in (signal.SIGINT, signal.SIGTERM):
                 asyncio.get_running_loop().add_signal_handler(s, shutdown_signal)
 
             try:
-                await asyncio.gather(fuse_task, watcher_task)
+                await asyncio.gather(fuse_task, watcher_task, remote_poll_task)
             except asyncio.CancelledError:
                 logger.info("Tasks cancelled")
             finally:

@@ -114,6 +114,7 @@ install_packages_kali() {
     desktop-file-utils \
     exo-utils \
     xdg-utils \
+    zenity \
     mousepad \
     ristretto \
     sqlite3
@@ -139,6 +140,7 @@ install_packages_alt() {
     thunar \
     desktop-file-utils \
     xdg-utils \
+    zenity \
     mousepad \
     ristretto \
     sqlite3

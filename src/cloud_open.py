@@ -88,6 +88,25 @@ def _first_available(commands: list[str]) -> Optional[str]:
     return None
 
 
+def show_error_dialog(message: str, title: str = "CloudBridge error"):
+    commands = [
+        ["zenity", "--error", "--title", title, "--text", message, "--width", "520"],
+        ["yad", "--error", "--title", title, "--text", message, "--width", "520"],
+        ["kdialog", "--error", message, "--title", title],
+        ["xmessage", "-center", "-title", title, message],
+        ["notify-send", title, message],
+    ]
+    for command in commands:
+        if not shutil.which(command[0]):
+            continue
+        try:
+            subprocess.Popen(command)
+            return
+        except Exception:
+            continue
+    print(f"{title}: {message}", flush=True)
+
+
 def _auto_command(local_path: Path) -> list[str]:
     mime_type, _ = mimetypes.guess_type(str(local_path))
     if mime_type and mime_type.startswith("image/"):
@@ -114,6 +133,16 @@ def _auto_command(local_path: Path) -> list[str]:
         if editor:
             return [editor, str(local_path)]
 
+    fallback_editor = os.getenv("CLOUDBRIDGE_UNKNOWN_EDITOR") or _first_available([
+        "mousepad",
+        "xed",
+        "gedit",
+        "kate",
+        "leafpad",
+    ])
+    if fallback_editor:
+        return [fallback_editor, str(local_path)]
+
     return ["xdg-open", str(local_path)]
 
 
@@ -132,6 +161,10 @@ def _describe_file_type(local_path: Path) -> str:
     if mime_type == "application/pdf":
         return "pdf"
     return mime_type
+
+
+def _needs_persistent_session(local_path: Path, command: list[str]) -> bool:
+    return bool(command and Path(command[0]).name in {"xdg-open", "gio"})
 
 
 def _open_and_wait(command: list[str], wait_for_enter: bool):
@@ -192,9 +225,11 @@ async def open_cloud_file(
             metadata["status"] = "unchanged"
             metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
             print("[CloudBridge] unchanged, no upload needed", flush=True)
-            if not keep_unchanged:
+            if not keep_unchanged and not _needs_persistent_session(local_path, open_command):
                 shutil.rmtree(session_dir)
                 print("[CloudBridge] temporary copy removed", flush=True)
+            else:
+                print(f"[CloudBridge] temporary copy kept for the opener: {session_dir}", flush=True)
             return
 
         print(f"[CloudBridge] changed, uploading back to {remote_path}", flush=True)
@@ -240,7 +275,11 @@ def main():
     load_env_file()
     args = parse_args()
     wait_for_enter = args.wait_enter
-    asyncio.run(open_cloud_file(args.remote_path, args.command, wait_for_enter, args.keep_unchanged))
+    try:
+        asyncio.run(open_cloud_file(args.remote_path, args.command, wait_for_enter, args.keep_unchanged))
+    except Exception as exc:
+        show_error_dialog(str(exc))
+        raise
 
 
 if __name__ == "__main__":

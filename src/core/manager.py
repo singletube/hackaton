@@ -1,5 +1,6 @@
 import logging
 import os
+import posixpath
 from pathlib import Path
 from typing import List, Optional, AsyncIterator
 from .database import StateDB
@@ -174,6 +175,70 @@ class HybridManager:
             if not os.path.exists(local_path):
                 logger.info("Pruning orphan cloud file: %s", item.path)
                 await self.delete_remote_file(item.path)
+
+    def _local_path_for_remote(self, local_root: str, remote_path: str) -> Path:
+        root = self.remote_root.rstrip("/") or "/"
+        relative_path = posixpath.relpath(remote_path, root)
+        if relative_path == ".":
+            return Path(local_root)
+        return Path(local_root).joinpath(*[part for part in relative_path.split("/") if part])
+
+    async def materialize_remote_placeholders(self, local_root: str):
+        """Creates local placeholders for cloud files that are missing locally."""
+        logger.info("Materializing remote placeholders under %s", local_root)
+        created_files = 0
+        created_dirs = 0
+        skipped = 0
+
+        remote_items = await self.provider.get_all_files_recursive(self.remote_root)
+        remote_items.sort(key=lambda item: (item.path.count("/"), item.path))
+
+        for item in remote_items:
+            if is_ignored(item.path):
+                skipped += 1
+                continue
+
+            await self.db.upsert_cloud_item(item, status=FileStatus.OFFLINE)
+            local_path = self._local_path_for_remote(local_root, item.path)
+
+            if item.type == ItemType.DIRECTORY:
+                if not local_path.exists():
+                    local_path.mkdir(parents=True, exist_ok=True)
+                    created_dirs += 1
+                continue
+
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            if local_path.exists():
+                if local_path.is_file() and local_path.stat().st_size == 0:
+                    set_placeholder_remote_path(local_path, item.path)
+                    await self.db.update_status(
+                        item.path,
+                        FileStatus.OFFLINE,
+                        str(local_path),
+                        size=item.size,
+                        modified_at=item.modified_at.isoformat(),
+                    )
+                skipped += 1
+                continue
+
+            with local_path.open("wb") as f:
+                f.truncate(0)
+            set_placeholder_remote_path(local_path, item.path)
+            await self.db.update_status(
+                item.path,
+                FileStatus.OFFLINE,
+                str(local_path),
+                size=item.size,
+                modified_at=item.modified_at.isoformat(),
+            )
+            created_files += 1
+
+        logger.info(
+            "Remote placeholder materialization complete: files=%d dirs=%d skipped=%d",
+            created_files,
+            created_dirs,
+            skipped,
+        )
 
     async def bootstrap_local_sync(self, local_root: str):
         """Walks the local directory and ensures all items exist in the cloud."""
