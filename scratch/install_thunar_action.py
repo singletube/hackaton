@@ -1,5 +1,6 @@
 import argparse
 import os
+import shlex
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -67,6 +68,16 @@ def _add_action(root, name: str, command: str, description: str, icon: str):
     ET.SubElement(action, "video-files").text = "TRUE"
 
 
+def _background_command(project_dir: Path, env_setup: str, command: str) -> str:
+    script = (
+        "mkdir -p \"$HOME/.cache/cloudbridge\" && "
+        f"cd {shlex.quote(str(project_dir))} && "
+        f"{env_setup}"
+        f"{command} >> \"$HOME/.cache/cloudbridge/actions.log\" 2>&1 &"
+    )
+    return f"bash -lc {shlex.quote(script)}"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Install Thunar custom action for CloudBridge.")
     parser.add_argument("--project-dir", default=str(Path(__file__).resolve().parents[1]))
@@ -96,40 +107,32 @@ def main():
     env_setup = ""
     if args.env_file:
         env_path = Path(args.env_file).expanduser()
-        env_setup = f"if [ -f \"{env_path}\" ]; then source \"{env_path}\"; fi && "
+        env_setup = f"if [ -f {shlex.quote(str(env_path))} ]; then source {shlex.quote(str(env_path))}; fi && "
     else:
         env_setup = (
-            f"export YANDEX_TOKEN=\"{args.token}\" && "
-            f"export YANDEX_PATH=\"{args.remote_root}\" && "
-            f"export LOCAL_PATH=\"{args.local_path}\" && "
+            f"export YANDEX_TOKEN={shlex.quote(args.token)} && "
+            f"export YANDEX_PATH={shlex.quote(args.remote_root)} && "
+            f"export LOCAL_PATH={shlex.quote(args.local_path)} && "
         )
-    open_action_command = (
-        "exo-open --launch TerminalEmulator bash -lc "
-        f"'cd {project_dir} && "
-        f"{env_setup}"
-        f"\"{args.python_bin}\" -m src.cloud_open \"%f\"{open_command}'"
+    open_action_command = _background_command(
+        project_dir,
+        env_setup,
+        f"\"{args.python_bin}\" -m src.cloud_open \"%f\"{open_command}",
     )
-    store_local_command = (
-        "exo-open --launch TerminalEmulator bash -lc "
-        f"'cd {project_dir} && "
-        f"{env_setup}"
-        f"\"{args.python_bin}\" -m src.keep_local \"%f\"; "
-        "read -r -p \"Press Enter to close...\"'"
+    store_local_command = _background_command(
+        project_dir,
+        env_setup,
+        f"\"{args.python_bin}\" -m src.keep_local \"%f\"",
     )
-    restore_cloud_command = (
-        "exo-open --launch TerminalEmulator bash -lc "
-        f"'cd {project_dir} && "
-        f"{env_setup}"
-        f"\"{args.python_bin}\" -m src.restore_cloud \"%f\"; "
-        "read -r -p \"Press Enter to close...\"'"
+    restore_cloud_command = _background_command(
+        project_dir,
+        env_setup,
+        f"\"{args.python_bin}\" -m src.restore_cloud \"%f\"",
     )
-    share_read_command = (
-        "bash -lc "
-        f"'mkdir -p \"$HOME/.cache/cloudbridge\" && "
-        f"cd {project_dir} && "
-        f"{env_setup}"
-        f"\"{args.python_bin}\" -m src.share_link \"%f\" "
-        ">> \"$HOME/.cache/cloudbridge/actions.log\" 2>&1 &'"
+    share_read_command = _background_command(
+        project_dir,
+        env_setup,
+        f"\"{args.python_bin}\" -m src.share_link \"%f\"",
     )
 
     tree, root = _load_or_create(config_path)

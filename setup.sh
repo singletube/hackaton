@@ -146,6 +146,27 @@ install_packages_alt() {
     sqlite3
 }
 
+install_optional_desktop_packages() {
+  local apt_bin="$1"
+  local apt_flags=()
+  if [[ ${AUTO_YES} -eq 1 ]]; then
+    apt_flags+=("-y")
+  fi
+
+  say "Installing optional desktop helpers"
+  local installed_any=0
+  for package_name in xclip xsel wl-clipboard; do
+    if sudo "${apt_bin}" install "${apt_flags[@]}" "${package_name}"; then
+      installed_any=1
+    else
+      warn "Optional package ${package_name} was not installed"
+    fi
+  done
+  if [[ ${installed_any} -eq 0 ]]; then
+    warn "No optional clipboard helper was installed; share links will still be saved to ~/.cache/cloudbridge/last_share_link.txt"
+  fi
+}
+
 create_venv() {
   say "Creating Python virtual environment"
   if ! python3 -m venv --help >/dev/null 2>&1; then
@@ -174,12 +195,57 @@ write_config() {
     printf 'export CLOUDBRIDGE_PROJECT_DIR=%q\n' "${PROJECT_DIR}"
     printf 'export CLOUDBRIDGE_PYTHON=%q\n' "${VENV_DIR}/bin/python"
     printf 'export CLOUDBRIDGE_DB_PATH=%q\n' "${db_path}"
+    printf 'export CLOUDBRIDGE_REMOTE_POLL_INTERVAL=60\n'
+    printf 'export CLOUDBRIDGE_TEXT_EDITOR=mousepad\n'
+    printf 'export CLOUDBRIDGE_UNKNOWN_EDITOR=mousepad\n'
+    printf 'export CLOUDBRIDGE_IMAGE_VIEWER=ristretto\n'
     printf 'export PYTHONUNBUFFERED=1\n'
   } > "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}"
   mkdir -p "${local_path}" "${CACHE_DIR}/sessions"
   touch "${db_path}"
   chmod 600 "${db_path}"
+}
+
+validate_config_input() {
+  local token="$1"
+  local remote_root="$2"
+  local local_path="$3"
+
+  if [[ -z "${token}" ]]; then
+    warn "Yandex OAuth token is required"
+    exit 1
+  fi
+  if [[ -z "${remote_root}" ]]; then
+    warn "Yandex.Disk folder is required"
+    exit 1
+  fi
+  if [[ -z "${local_path}" ]]; then
+    warn "Local sync folder is required"
+    exit 1
+  fi
+}
+
+normalize_remote_root() {
+  local remote_root="$1"
+  remote_root="/${remote_root#/}"
+  remote_root="${remote_root%/}"
+  if [[ -z "${remote_root}" ]]; then
+    remote_root="/"
+  fi
+  printf '%s' "${remote_root}"
+}
+
+ensure_user_path() {
+  say "Ensuring ~/.local/bin is in PATH for future shells"
+  mkdir -p "${BIN_DIR}"
+  local line='export PATH="$HOME/.local/bin:$PATH"'
+  for shell_file in "${HOME}/.profile" "${HOME}/.bashrc"; do
+    touch "${shell_file}"
+    if ! grep -Fxq "${line}" "${shell_file}"; then
+      printf '\n%s\n' "${line}" >> "${shell_file}"
+    fi
+  done
 }
 
 install_filemanager_integration() {
@@ -233,6 +299,33 @@ cd "${PROJECT_DIR}"
 exec "\${CLOUDBRIDGE_PYTHON}" -m src.open_or_default "\$@"
 EOF
   chmod +x "${BIN_DIR}/cloudbridge-open-or-default"
+
+  cat > "${BIN_DIR}/cloudbridge-store-local" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "${CONFIG_FILE}"
+cd "${PROJECT_DIR}"
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.keep_local "\$@"
+EOF
+  chmod +x "${BIN_DIR}/cloudbridge-store-local"
+
+  cat > "${BIN_DIR}/cloudbridge-restore-cloud" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "${CONFIG_FILE}"
+cd "${PROJECT_DIR}"
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.restore_cloud "\$@"
+EOF
+  chmod +x "${BIN_DIR}/cloudbridge-restore-cloud"
+
+  cat > "${BIN_DIR}/cloudbridge-share" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "${CONFIG_FILE}"
+cd "${PROJECT_DIR}"
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.share_link "\$@"
+EOF
+  chmod +x "${BIN_DIR}/cloudbridge-share"
 }
 
 check_runtime_alt() {
@@ -276,15 +369,20 @@ main() {
   token="$(ask_secret "Yandex OAuth token")"
   remote_root="$(ask "Yandex.Disk folder to sync" "${default_remote}")"
   local_path="$(ask "Local folder shown in Thunar" "${default_local}")"
+  remote_root="$(normalize_remote_root "${remote_root}")"
+  local_path="$(readlink -m "${local_path}")"
+  validate_config_input "${token}" "${remote_root}" "${local_path}"
 
   case "${TARGET_OS}" in
     kali)
       say "CloudBridge first-run setup for Kali"
       install_packages_kali
+      install_optional_desktop_packages apt
       ;;
     alt)
       say "CloudBridge first-run setup for ALT Linux"
       install_packages_alt
+      install_optional_desktop_packages apt-get
       ;;
     *)
       warn "Unsupported target: ${TARGET_OS}"
@@ -294,6 +392,7 @@ main() {
 
   create_venv
   write_config "${token}" "${remote_root}" "${local_path}"
+  ensure_user_path
   install_launchers
   install_filemanager_integration "${local_path}" "${remote_root}"
   enable_fuse_allow_other
@@ -305,15 +404,10 @@ main() {
   say "Setup complete"
   printf 'Target OS: %s\n' "${TARGET_OS}"
   printf 'Config: %s\n' "${CONFIG_FILE}"
-  printf 'Context menu: Thunar -> right click a file -> Open with CloudBridge / Store Locally / Restore to Cloud\n'
+  printf 'Context menu: Thunar -> right click a file -> CloudBridge submenu\n'
   printf 'Double click: placeholder files open through CloudBridge automatically\n'
   printf 'Start watcher/daemon with: cloudbridge-start\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"
-
-  if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
-    printf '\nAdd this to your shell config if cloudbridge-start is not found:\n'
-    printf 'export PATH="$HOME/.local/bin:$PATH"\n'
-  fi
 
   read -r -p "Start CloudBridge daemon now? [Y/n]: " start_now
   if [[ "${start_now:-Y}" =~ ^[Yy]$ ]]; then

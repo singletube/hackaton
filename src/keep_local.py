@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from .cloud_open import _normalize_remote_path
+from .cloud_open import _normalize_remote_path, show_error_dialog
 from .core.env_config import load_env_file
 from .core.ignore_list import add_ignored_path
 from .core.provider.yandex import YandexDiskProvider
@@ -94,7 +94,11 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     load_env_file()
     args = parse_args()
-    asyncio.run(keep_local(args.path))
+    try:
+        asyncio.run(keep_local(args.path))
+    except Exception as exc:
+        show_error_dialog(str(exc), title="CloudBridge store local error")
+        raise
 
 
 if __name__ == "__main__":

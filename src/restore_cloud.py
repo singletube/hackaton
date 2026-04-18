@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .cloud_open import _normalize_remote_path
+from .cloud_open import _normalize_remote_path, show_error_dialog
 from .keep_local import _local_target_for
 from .core.env_config import load_env_file
 from .core.ignore_list import add_ignored_path, remove_ignored_path
@@ -86,7 +86,11 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     load_env_file()
     args = parse_args()
-    asyncio.run(restore_to_cloud(args.path))
+    try:
+        asyncio.run(restore_to_cloud(args.path))
+    except Exception as exc:
+        show_error_dialog(str(exc), title="CloudBridge restore cloud error")
+        raise
 
 
 if __name__ == "__main__":
