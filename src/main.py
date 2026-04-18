@@ -22,14 +22,15 @@ try:
         # ... existing main content ...
         TOKEN = os.getenv("YANDEX_TOKEN", "y0__xCzmrXmCBjOv0Ag0o_Vjhdt6Z44hHi-AWWAayZ3qZpaNNl-jw")
         REMOTE_ROOT = os.getenv("YANDEX_PATH", "/")
-        DB_PATH = "/tmp/state.db"
-        CACHE_DIR = "/tmp/cache"
+        DB_PATH = os.getenv("CLOUDBRIDGE_DB_PATH", os.path.expanduser("~/.cache/cloudbridge/state.db"))
+        CACHE_DIR = os.getenv("CLOUDBRIDGE_CACHE_DIR", "/tmp/cache")
         MOUNT_POINT = os.getenv("MOUNT_POINT", "/tmp/yandex_mount")
         MIRROR_DIR = os.getenv("LOCAL_PATH", "/tmp/yandex_mirror")
 
         logger.info("Starting CloudBridge selective sync for path: %s", REMOTE_ROOT)
 
-        for d in [CACHE_DIR, MOUNT_POINT, MIRROR_DIR]:
+        db_dir = os.path.dirname(DB_PATH)
+        for d in [db_dir, CACHE_DIR, MOUNT_POINT, MIRROR_DIR]:
             try:
                 os.makedirs(d, exist_ok=True)
             except FileExistsError:
