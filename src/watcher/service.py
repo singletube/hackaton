@@ -4,6 +4,7 @@ import os
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from ..core.manager import HybridManager
+from ..core.ignore_list import is_ignored
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,10 @@ class AsyncWatcher:
                     remote_path = os.path.join(self.manager.remote_root, relative_path).replace(os.sep, '/')
                     if remote_path.startswith("//"):
                         remote_path = remote_path[1:]
+
+                    if is_ignored(remote_path):
+                        logger.info("Ignoring local-only path %s (%s)", remote_path, action)
+                        continue
                     
                     if action == "upload":
                         if os.path.exists(local_path):

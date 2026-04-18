@@ -69,6 +69,7 @@ write_config() {
     printf 'export YANDEX_TOKEN=%q\n' "${token}"
     printf 'export YANDEX_PATH=%q\n' "${remote_root}"
     printf 'export LOCAL_PATH=%q\n' "${local_path}"
+    printf 'export CLOUDBRIDGE_IGNORE_FILE=%q\n' "${CONFIG_DIR}/ignored.json"
     printf 'export CLOUDBRIDGE_PROJECT_DIR=%q\n' "${PROJECT_DIR}"
     printf 'export CLOUDBRIDGE_PYTHON=%q\n' "${VENV_DIR}/bin/python"
     printf 'export PYTHONUNBUFFERED=1\n'
@@ -135,7 +136,7 @@ main() {
 
   say "Setup complete"
   printf 'Config: %s\n' "${CONFIG_FILE}"
-  printf 'Context menu: Thunar -> right click a file -> Open with CloudBridge\n'
+  printf 'Context menu: Thunar -> right click a file -> Open with CloudBridge / Store Locally / Restore to Cloud\n'
   printf 'Start watcher/daemon with: cloudbridge-start\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"
 

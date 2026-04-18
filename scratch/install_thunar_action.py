@@ -4,7 +4,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-ACTION_NAME = "Open with CloudBridge"
+OPEN_ACTION_NAME = "Open with CloudBridge"
+STORE_LOCAL_ACTION_NAME = "Store Locally"
+RESTORE_CLOUD_ACTION_NAME = "Restore to Cloud"
 
 
 def _indent(element, level=0):
@@ -35,18 +37,18 @@ def _load_or_create(path: Path):
 def _remove_existing(root):
     for action in list(root.findall("action")):
         name = action.findtext("name")
-        if name == ACTION_NAME:
+        if name in {OPEN_ACTION_NAME, STORE_LOCAL_ACTION_NAME, RESTORE_CLOUD_ACTION_NAME}:
             root.remove(action)
 
 
-def _add_action(root, command: str):
+def _add_action(root, name: str, command: str, description: str, icon: str):
     action = ET.SubElement(root, "action")
-    ET.SubElement(action, "icon").text = "folder-cloud"
-    ET.SubElement(action, "name").text = ACTION_NAME
+    ET.SubElement(action, "icon").text = icon
+    ET.SubElement(action, "name").text = name
     ET.SubElement(action, "submenu").text = ""
-    ET.SubElement(action, "unique-id").text = "cloudbridge-open"
+    ET.SubElement(action, "unique-id").text = name.lower().replace(" ", "-")
     ET.SubElement(action, "command").text = command
-    ET.SubElement(action, "description").text = "Download, open, upload changes, then clean up"
+    ET.SubElement(action, "description").text = description
     ET.SubElement(action, "range").text = "*"
     ET.SubElement(action, "patterns").text = "*"
     ET.SubElement(action, "directories").text = "FALSE"
@@ -85,27 +87,64 @@ def main():
     open_command = "" if args.editor == "auto" else f" --command {args.editor}"
     env_setup = ""
     if args.env_file:
-        env_setup = f"source \"{Path(args.env_file).expanduser()}\" && "
+        env_path = Path(args.env_file).expanduser()
+        env_setup = f"if [ -f \"{env_path}\" ]; then source \"{env_path}\"; fi && "
     else:
         env_setup = (
             f"export YANDEX_TOKEN=\"{args.token}\" && "
             f"export YANDEX_PATH=\"{args.remote_root}\" && "
             f"export LOCAL_PATH=\"{args.local_path}\" && "
         )
-    command = (
+    open_action_command = (
         "exo-open --launch TerminalEmulator bash -lc "
         f"'cd {project_dir} && "
         f"{env_setup}"
         f"\"{args.python_bin}\" -m src.cloud_open \"%f\"{open_command}'"
     )
+    store_local_command = (
+        "exo-open --launch TerminalEmulator bash -lc "
+        f"'cd {project_dir} && "
+        f"{env_setup}"
+        f"\"{args.python_bin}\" -m src.keep_local \"%f\"; "
+        "read -r -p \"Press Enter to close...\"'"
+    )
+    restore_cloud_command = (
+        "exo-open --launch TerminalEmulator bash -lc "
+        f"'cd {project_dir} && "
+        f"{env_setup}"
+        f"\"{args.python_bin}\" -m src.restore_cloud \"%f\"; "
+        "read -r -p \"Press Enter to close...\"'"
+    )
 
     tree, root = _load_or_create(config_path)
     _remove_existing(root)
-    _add_action(root, command)
+    _add_action(
+        root,
+        OPEN_ACTION_NAME,
+        open_action_command,
+        "Download, open, upload changes, then clean up",
+        "folder-cloud",
+    )
+    _add_action(
+        root,
+        STORE_LOCAL_ACTION_NAME,
+        store_local_command,
+        "Download this file over the placeholder and ignore future uploads",
+        "document-save",
+    )
+    _add_action(
+        root,
+        RESTORE_CLOUD_ACTION_NAME,
+        restore_cloud_command,
+        "Upload this local file back to Yandex.Disk and replace it with a placeholder",
+        "folder-cloud",
+    )
     _indent(root)
     tree.write(config_path, encoding="UTF-8", xml_declaration=True)
 
-    print(f"Installed Thunar action: {ACTION_NAME}")
+    print(f"Installed Thunar action: {OPEN_ACTION_NAME}")
+    print(f"Installed Thunar action: {STORE_LOCAL_ACTION_NAME}")
+    print(f"Installed Thunar action: {RESTORE_CLOUD_ACTION_NAME}")
     print(f"Config: {config_path}")
     print("Restart Thunar with: thunar -q")
 

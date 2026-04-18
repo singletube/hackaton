@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .core.env_config import load_env_file
 from .core.provider.yandex import YandexDiskProvider
 
 logger = logging.getLogger(__name__)
@@ -236,6 +237,7 @@ def parse_args():
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    load_env_file()
     args = parse_args()
     auto_command = args.command == ["auto"]
     wait_for_enter = args.wait_enter or not args.command or auto_command
