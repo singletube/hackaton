@@ -143,7 +143,7 @@ class LocalWatcher:
         deleted_paths: list[str] = []
 
         for source_path, target_path in pending_moves:
-            if await self._queue_placeholder_move(source_path, target_path):
+            if await self._queue_remote_move(source_path, target_path):
                 uploaded_paths.append(target_path)
                 deleted_paths.append(source_path)
                 candidate_paths.discard(source_path)
@@ -210,16 +210,24 @@ class LocalWatcher:
         await self._state.set_sync_state(path, SyncState.QUEUED)
         return True
 
-    async def _queue_placeholder_move(self, source_path: str, target_path: str) -> bool:
+    async def _queue_remote_move(self, source_path: str, target_path: str) -> bool:
         entry = await self._state.get_entry(source_path)
-        if not self._is_placeholder_entry(entry):
+        if entry is None or not entry.has_remote:
             return False
         if source_path == target_path:
             return False
-        if not is_placeholder_file(virtual_to_local_path(self._sync_root, target_path)):
+        target_local_path = virtual_to_local_path(self._sync_root, target_path)
+        if not target_local_path.exists():
+            return False
+        if (
+            self._is_placeholder_entry(entry)
+            and entry.kind is EntryKind.FILE
+            and not is_placeholder_file(target_local_path)
+        ):
             return False
         await self._state.enqueue_job(JobOperation.MOVE_REMOTE, source_path, target_path=target_path)
         await self._state.set_sync_state(source_path, SyncState.QUEUED)
+        await self._state.set_sync_state(target_path, SyncState.QUEUED)
         return True
 
     @staticmethod

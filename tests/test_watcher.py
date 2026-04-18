@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from cloudbridge.filesystem import materialize_remote_placeholders
-from cloudbridge.models import EntryKind, JobOperation, RemoteEntry
+from cloudbridge.models import EntryKind, JobOperation, LocalEntry, RemoteEntry
 from cloudbridge.state import StateDB
 from cloudbridge.watcher import LocalWatcher
 
@@ -217,6 +217,70 @@ async def test_local_watcher_moves_remote_placeholder_with_watchdog_backend(tmp_
         assert jobs[0].operation is JobOperation.MOVE_REMOTE
         assert jobs[0].path == "/photo.jpg"
         assert jobs[0].target_path == "/renamed.jpg"
+    finally:
+        await watcher.close()
+        await state.close()
+
+
+@pytest.mark.asyncio
+async def test_local_watcher_moves_synced_file_with_watchdog_backend(tmp_path: Path) -> None:
+    sync_root = tmp_path / "mirror"
+    sync_root.mkdir(parents=True, exist_ok=True)
+
+    remote_entry = RemoteEntry(
+        path="/report.txt",
+        name="report.txt",
+        parent_path="/",
+        kind=EntryKind.FILE,
+        size=7,
+    )
+
+    state = StateDB(tmp_path / "state.db")
+    await state.connect()
+    watcher = LocalWatcher(state, sync_root, "memory", backend="watchdog")
+    try:
+        local_path = sync_root / "report.txt"
+        local_path.write_text("payload", encoding="utf-8")
+        await state.upsert_remote_entries("memory", [remote_entry])
+        await state.upsert_local_entries(
+            "memory",
+            [
+                LocalEntry(
+                    path="/report.txt",
+                    name="report.txt",
+                    parent_path="/",
+                    kind=EntryKind.FILE,
+                    size=7,
+                )
+            ],
+        )
+        await state.resolve_entry_state("/report.txt")
+        await watcher.seed()
+
+        target_path = sync_root / "archive" / "report.txt"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.rename(target_path)
+        watcher._record_filesystem_event(
+            type(
+                "MoveEvent",
+                (),
+                {
+                    "event_type": "moved",
+                    "is_directory": False,
+                    "src_path": str(local_path),
+                    "dest_path": str(target_path),
+                },
+            )()
+        )
+
+        changes = await watcher.poll(timeout=0)
+        assert changes.uploaded_paths == ("/archive/report.txt",)
+        assert changes.deleted_paths == ("/report.txt",)
+        jobs = await state.claim_jobs(10)
+        assert len(jobs) == 1
+        assert jobs[0].operation is JobOperation.MOVE_REMOTE
+        assert jobs[0].path == "/report.txt"
+        assert jobs[0].target_path == "/archive/report.txt"
     finally:
         await watcher.close()
         await state.close()
