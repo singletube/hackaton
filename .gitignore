@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-.cloudbridge/
-.tmp/
-.tmp_tests/
-cloudbridge.egg-info/
-pytest-cache-files-*/

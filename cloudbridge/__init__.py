@@ -1,2 +1,0 @@
-"""CloudBridge core package."""
-
