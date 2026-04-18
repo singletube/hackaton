@@ -195,10 +195,10 @@ class AsyncWatcher:
 
         if expected_remote_path:
             item = await self.manager.db.get_item(expected_remote_path)
-            if item and item["status"] == FileStatus.OFFLINE.value:
+            if item:
                 return expected_remote_path
 
-        matches = await self.manager.db.get_offline_files_by_name(os.path.basename(local_path))
+        matches = await self.manager.db.get_cloud_files_by_name(os.path.basename(local_path))
         if len(matches) == 1:
             return matches[0]["path"]
         if len(matches) > 1:
@@ -233,6 +233,14 @@ class AsyncWatcher:
         remove_placeholder_remote_path(dest_path)
         if delete_remote:
             await self.manager.delete_remote_file(remote_path)
+
+    def _looks_like_exported_placeholder(self, dest_path: str, item: dict | None) -> bool:
+        if not item or item.get("type") != "file":
+            return False
+        try:
+            return os.path.exists(dest_path) and os.path.getsize(dest_path) == 0 and int(item.get("size") or 0) > 0
+        except OSError:
+            return False
 
     async def _handle_created_in_sync(self, handler: SyncEventHandler, local_path: str, attempt: int):
         if not os.path.exists(local_path):
@@ -311,9 +319,9 @@ class AsyncWatcher:
                             logger.info("Ignoring local-only path %s (%s)", remote_path, action)
                             continue
                         item = await self.manager.db.get_item(remote_path)
-                        if item and item["status"] == FileStatus.OFFLINE.value:
+                        if item and item.get("type") == "file" and int(item.get("size") or 0) > 0:
                             basename = os.path.basename(local_path)
-                            logger.info("Possible outbound move detected for offline stub: %s", remote_path)
+                            logger.info("Possible outbound move detected for cloud placeholder: %s", remote_path)
                             external_stub = self._pop_external_stub(basename)
                             if external_stub:
                                 await self._hydrate_path(remote_path, external_stub["dest_path"], delete_remote=True)
@@ -349,8 +357,8 @@ class AsyncWatcher:
                             continue
                         dest_path = task[2]
                         item = await self.manager.db.get_item(remote_path)
-                        if not item or item["status"] != FileStatus.OFFLINE.value:
-                            logger.info("Outbound move ignored because source is not an offline stub: %s", remote_path)
+                        if not self._looks_like_exported_placeholder(dest_path, item):
+                            logger.info("Outbound move ignored because destination is not a 0-byte cloud placeholder: %s", remote_path)
                             continue
                         logger.info("Outbound move detected, hydrating %s into %s", remote_path, dest_path)
                         await self._hydrate_path(remote_path, dest_path, delete_remote=True)

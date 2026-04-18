@@ -82,20 +82,25 @@ class StateDB:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
-    async def get_offline_files_by_name(self, name: str) -> List[dict]:
-        """Returns offline file records with the given basename."""
+    async def get_cloud_files_by_name(self, name: str) -> List[dict]:
+        """Returns cloud file records with the given basename."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
                 SELECT * FROM items
-                WHERE name = ? AND type = ? AND status = ?
+                WHERE name = ? AND type = ?
                 ORDER BY last_sync DESC
                 """,
-                (name, ItemType.FILE.value, FileStatus.OFFLINE.value),
+                (name, ItemType.FILE.value),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+    async def get_offline_files_by_name(self, name: str) -> List[dict]:
+        """Returns offline file records with the given basename."""
+        rows = await self.get_cloud_files_by_name(name)
+        return [row for row in rows if row["status"] == FileStatus.OFFLINE.value]
 
     async def get_children(self, parent_path: str) -> List[dict]:
         """Lists items in a given directory."""
