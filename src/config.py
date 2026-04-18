@@ -44,7 +44,13 @@ def load_runtime_config() -> CloudBridgeConfig:
 
 def ensure_runtime_directories(config: CloudBridgeConfig):
     for path in (config.cache_dir, config.mount_point, config.mirror_dir):
-        os.makedirs(path, exist_ok=True)
+        try:
+            os.makedirs(path, exist_ok=True)
+        except FileExistsError:
+            # Mount point can temporarily exist as a non-directory artifact.
+            if path == config.mount_point:
+                continue
+            raise
 
 
 def _atomic_json_write(path: str, payload: dict[str, Any]):

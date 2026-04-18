@@ -161,8 +161,16 @@ class TrayApp:
             _notify("CloudBridge", "Daemon is already running")
             return
         log_file = Path(self.config.daemon_log_path)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_handle = log_file.open("a", encoding="utf-8")
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_handle = log_file.open("a", encoding="utf-8")
+        except OSError:
+            fallback_dir = Path(os.getenv("XDG_CACHE_HOME", "~/.cache")).expanduser() / "cloudbridge"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            log_file = fallback_dir / "cloudbridge-daemon.log"
+            log_handle = log_file.open("a", encoding="utf-8")
+            self.config.daemon_log_path = str(log_file)
+            os.environ["CLOUDBRIDGE_DAEMON_LOG"] = str(log_file)
         self.daemon_proc = subprocess.Popen(
             [self.python_bin, "-m", "src.main"],
             cwd=self.project_dir,

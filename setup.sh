@@ -213,7 +213,16 @@ install_launchers() {
 set -euo pipefail
 source "${CONFIG_FILE}"
 cd "${PROJECT_DIR}"
-exec "\${CLOUDBRIDGE_PYTHON}" -m src.main 2>&1 | tee /tmp/cloudbridge-daemon.log
+log_file="\${CLOUDBRIDGE_DAEMON_LOG:-/tmp/cloudbridge-daemon.log}"
+log_dir="\$(dirname "\${log_file}")"
+mkdir -p "\${log_dir}" 2>/dev/null || true
+if ! touch "\${log_file}" 2>/dev/null; then
+  fallback_dir="\${XDG_CACHE_HOME:-\$HOME/.cache}/cloudbridge"
+  mkdir -p "\${fallback_dir}"
+  log_file="\${fallback_dir}/cloudbridge-daemon.log"
+  export CLOUDBRIDGE_DAEMON_LOG="\${log_file}"
+fi
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.main 2>&1 | tee -a "\${log_file}"
 EOF
   chmod +x "${BIN_DIR}/cloudbridge-start"
 
