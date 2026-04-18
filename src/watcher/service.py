@@ -194,7 +194,7 @@ class AsyncWatcher:
             return xattr_remote
 
         if expected_remote_path:
-            item = await self.manager.db.get_item(expected_remote_path)
+            item = await self._get_cloud_file_item(expected_remote_path)
             if item:
                 return expected_remote_path
 
@@ -207,6 +207,24 @@ class AsyncWatcher:
                 local_path,
                 len(matches),
             )
+        return None
+
+    async def _get_cloud_file_item(self, remote_path: str) -> dict | None:
+        item = await self.manager.db.get_item(remote_path)
+        if item and item.get("type") == "file":
+            return item
+
+        parent = os.path.dirname(remote_path.rstrip("/")) or "/"
+        try:
+            logger.info("Cloud metadata missing for %s, syncing parent %s", remote_path, parent)
+            await self.manager.sync_directory(parent)
+        except Exception as exc:
+            logger.warning("Could not sync parent %s before placeholder hydration: %s", parent, exc)
+            return item if item and item.get("type") == "file" else None
+
+        item = await self.manager.db.get_item(remote_path)
+        if item and item.get("type") == "file":
+            return item
         return None
 
     def _notify_copy_download(self, title: str, message: str):
@@ -318,8 +336,8 @@ class AsyncWatcher:
                         if is_ignored(remote_path):
                             logger.info("Ignoring local-only path %s (%s)", remote_path, action)
                             continue
-                        item = await self.manager.db.get_item(remote_path)
-                        if item and item.get("type") == "file" and int(item.get("size") or 0) > 0:
+                        item = await self._get_cloud_file_item(remote_path)
+                        if item and int(item.get("size") or 0) > 0:
                             basename = os.path.basename(local_path)
                             logger.info("Possible outbound move detected for cloud placeholder: %s", remote_path)
                             external_stub = self._pop_external_stub(basename)
@@ -356,7 +374,7 @@ class AsyncWatcher:
                             logger.info("Ignoring local-only path %s (%s)", remote_path, action)
                             continue
                         dest_path = task[2]
-                        item = await self.manager.db.get_item(remote_path)
+                        item = await self._get_cloud_file_item(remote_path)
                         if not self._looks_like_exported_placeholder(dest_path, item):
                             logger.info("Outbound move ignored because destination is not a 0-byte cloud placeholder: %s", remote_path)
                             continue
