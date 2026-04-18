@@ -14,6 +14,10 @@ chmod +x scripts/install-linux.sh
   --manager auto
 ```
 
+Run the installer as your normal desktop user, not as `root`. This is a per-user install flow and
+it writes into `~/.local`, installs file-manager integrations, and configures a `systemd --user`
+service for the current user session.
+
 This installs CloudBridge into a local virtual environment under `~/.local/share/cloudbridge/app`,
 creates a wrapper at `~/.local/bin/cloudbridge-local`, initializes the local database, and installs
 file-manager actions for the detected Linux desktop. By default it also installs a

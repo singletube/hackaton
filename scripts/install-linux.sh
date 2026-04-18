@@ -21,6 +21,7 @@ NEXTCLOUD_URL=""
 NEXTCLOUD_USERNAME=""
 NEXTCLOUD_PASSWORD=""
 INSTALL_SERVICE=1
+ALLOW_ROOT=0
 
 usage() {
   cat <<'EOF'
@@ -40,6 +41,7 @@ Options:
   --manager <name>          File manager backend: auto, nautilus, thunar, nemo, caja. Default: auto
   --service-name <name>     systemd --user service name. Default: cloudbridge
   --skip-service            Do not install or enable the systemd user service
+  --allow-root              Allow installation into the root account (not recommended)
   --install-root <path>     Venv install root. Default: ~/.local/share/cloudbridge/app
   --app-home <path>         App state root. Default: ~/.local/share/cloudbridge
   --wrapper-path <path>     Wrapper binary path. Default: ~/.local/bin/cloudbridge-local
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_SERVICE=0
       shift
       ;;
+    --allow-root)
+      ALLOW_ROOT=1
+      shift
+      ;;
     --install-root)
       INSTALL_ROOT="$2"
       shift 2
@@ -127,6 +133,35 @@ done
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required" >&2
+  exit 1
+fi
+
+if [[ "$(id -u)" -eq 0 && "$ALLOW_ROOT" -ne 1 ]]; then
+  cat >&2 <<'EOF'
+install-linux.sh is a per-user installer and should not be run as root.
+
+Why this matters:
+- file-manager integration would be installed into /root instead of your desktop user
+- systemd --user service would target the root account
+- GUI and right-click actions would not appear for your regular user session
+
+Run it as your normal desktop user, or pass --allow-root only if you really want a root-local install.
+EOF
+  exit 1
+fi
+
+if ! python3 - <<'PY' >/dev/null 2>&1
+import sqlite3
+PY
+then
+  cat >&2 <<'EOF'
+python3 is missing the standard sqlite3 module.
+
+CloudBridge requires sqlite3 because the local state database is built on SQLite.
+
+On ALT Linux install the package that provides this module first, for example:
+  apt-get install python3-modules-sqlite3
+EOF
   exit 1
 fi
 

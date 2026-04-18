@@ -9,7 +9,7 @@
 ```bash
 su -
 apt-get update
-apt-get install git python3 python3-module-pip python3-modules-tkinter notify-send
+apt-get install git python3 python3-module-pip python3-modules-sqlite3 python3-modules-tkinter notify-send
 ```
 
 Если у вас рабочий стол MATE и вы хотите интеграцию с Caja и эмблемы статусов:
@@ -19,6 +19,15 @@ apt-get install python3-module-caja
 ```
 
 Если `sudo` настроен в системе, те же команды можно выполнять через `sudo`.
+
+Важно: сам `scripts/install-linux.sh` нужно запускать не от `root`, а от вашего обычного desktop-пользователя.
+CloudBridge ставит:
+
+- `~/.local/bin/cloudbridge-local`
+- пользовательские file-manager actions
+- `systemd --user` service
+
+Если запустить installer от `root`, все это окажется в `/root/.local/...` и не будет работать в вашей обычной сессии.
 
 ## 2. Склонировать проект
 
