@@ -19,6 +19,29 @@ creates a wrapper at `~/.local/bin/cloudbridge-local`, initializes the local dat
 file-manager actions for the detected Linux desktop. By default it also installs a
 `systemd --user` service and tries to enable it immediately.
 
+If you use the MATE desktop on ALT Linux or another distribution with Caja, install the Caja Python
+bindings before running desktop setup so CloudBridge can add status emblems and native menu items:
+
+```bash
+sudo apt install python3-caja
+```
+
+Some distributions package the same integration under a different name, for example `caja-python`.
+
+For desktop notifications about completed sync jobs and sync errors, make sure `notify-send` is
+available on the target system. On Debian-like systems this usually comes from:
+
+```bash
+sudo apt install libnotify-bin
+```
+
+If you want a graphical setup window instead of running setup commands manually, install Tk support
+for Python and use:
+
+```bash
+cloudbridge-local gui
+```
+
 ## Yandex Install Without Manual Token Copy
 
 If you have a Yandex OAuth app `Client ID` and `Client secret`, CloudBridge can complete login
@@ -40,6 +63,13 @@ the resulting token in:
 ```text
 ~/.local/share/cloudbridge/config.json
 ```
+
+Important: Yandex does not send the device code to your account. CloudBridge prints the `user_code`
+in the terminal and, in the GUI flow, also shows it in a popup. Enter that code on the opened
+`ya.ru/device` page.
+
+In the current GUI flow the same values are also mirrored into the authorization panel on the right
+and printed to stdout as `auth_url=...` and `auth_code=...`.
 
 If the browser does not open automatically, run the setup manually:
 
@@ -123,6 +153,7 @@ For manual setup after install:
 ```bash
 cloudbridge-local setup-yandex --client-id "YANDEX_CLIENT_ID" --client-secret "YANDEX_CLIENT_SECRET"
 cloudbridge-local setup-nextcloud --server "https://cloud.example.com"
+cloudbridge-local gui
 ```
 
 ## Background Service
@@ -160,13 +191,23 @@ Right-click upload actions send files to `CLOUDBRIDGE_IMPORT_ROOT`.
 Right-click share actions create or reuse a public link for files inside the sync root and copy it to the clipboard.
 For local files outside the sync root, the share action uploads the file first and then copies the public link.
 
-On Nautilus, CloudBridge also adds status emblems for files inside the sync root:
+On Thunar, Nemo, and Caja action backends, CloudBridge also installs:
+
+- `Download from Cloud`
+- `Free Local Space`
+
+These two actions are intended for files inside the CloudBridge sync root.
+
+On Nautilus and Caja, CloudBridge also adds status emblems for files inside the sync root:
 
 - `placeholder`
 - `queued / syncing`
 - `error`
 - `local_only`
 - `publicly shared`
+
+When the background daemon is running, CloudBridge also sends desktop notifications for completed
+uploads, downloads, deletions, moves, and sync errors.
 
 - `flat`: `/incoming/photo.jpg`
 - `by-parent`: `/incoming/Pictures/photo.jpg`
@@ -178,3 +219,6 @@ If a target name already exists, CloudBridge creates a safe deduplicated name li
 
 If you want a `.deb` or `.rpm` package instead of the per-user local install flow, use
 [package_linux.md](./package_linux.md).
+
+For an ALT Linux specific walkthrough from a clean system, use
+[install_alt_linux.md](./install_alt_linux.md).

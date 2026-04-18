@@ -32,6 +32,7 @@ class NemoInstallResult:
 
 @dataclass(slots=True, frozen=True)
 class CajaInstallResult:
+    extension_path: Path
     action_paths: tuple[Path, ...]
     launcher_path: Path
 
@@ -206,7 +207,7 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.I
         self._launch("dehydrate", *[str(path) for path in paths])
 
     def _activate_share(self, menu, files):
-        paths = self._selected_paths(files, require_sync_root=True)
+        paths = self._selected_paths(files)
         if not paths:
             return
         self._launch("share-selected", "--copy", *[str(path) for path in paths])
@@ -233,6 +234,14 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.I
         upload_item.connect("activate", self._activate_upload, files)
         submenu.append_item(upload_item)
 
+        share_item = Nautilus.MenuItem(
+            name="CloudBridgeMenuProvider::share",
+            label="Copy Public Link",
+            tip="Create or reuse a public share link and copy it to the clipboard",
+        )
+        share_item.connect("activate", self._activate_share, files)
+        submenu.append_item(share_item)
+
         if sync_paths:
             download_item = Nautilus.MenuItem(
                 name="CloudBridgeMenuProvider::download",
@@ -250,13 +259,188 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.I
             dehydrate_item.connect("activate", self._activate_dehydrate, files)
             submenu.append_item(dehydrate_item)
 
-            share_item = Nautilus.MenuItem(
-                name="CloudBridgeMenuProvider::share",
-                label="Copy Public Link",
-                tip="Create or reuse a public share link and copy it to the clipboard",
+        return (root_item,)
+"""
+
+
+def render_caja_extension(launcher_path: Path, sync_root: Path, database_path: Path) -> str:
+    return f"""from gi.repository import GObject, Caja
+import subprocess
+import sqlite3
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+LAUNCHER = Path({str(launcher_path)!r})
+SYNC_ROOT = Path({str(sync_root)!r}).resolve()
+DATABASE_PATH = Path({str(database_path)!r}).resolve()
+STATUS_EMBLEMS = {{
+    "placeholder": "emblem-downloads",
+    "queued": "emblem-synchronizing",
+    "syncing": "emblem-synchronizing",
+    "error": "emblem-important",
+    "local_only": "emblem-new",
+}}
+
+
+def _uri_to_path(uri):
+    if not uri or not uri.startswith("file://"):
+        return None
+    return Path(unquote(urlparse(uri).path)).resolve()
+
+
+def _collapse_paths(paths):
+    collapsed = []
+    for path in sorted(set(paths), key=lambda value: len(value.parts)):
+        if any(parent == path or parent in path.parents for parent in collapsed):
+            continue
+        collapsed.append(path)
+    return tuple(collapsed)
+
+
+def _local_to_virtual(path):
+    try:
+        relative = path.relative_to(SYNC_ROOT)
+    except ValueError:
+        return None
+    if not relative.parts:
+        return "/"
+    return "/" + "/".join(relative.parts)
+
+
+def _query_state(path):
+    if not DATABASE_PATH.exists():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{{DATABASE_PATH}}?mode=ro", uri=True, timeout=0.1)
+        connection.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute(
+            "SELECT sync_state, public_url, provider FROM entries WHERE path = ?",
+            (path,),
+        ).fetchone()
+        return row
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+
+class CloudBridgeCajaProvider(GObject.GObject, Caja.MenuProvider, Caja.InfoProvider):
+    def _selected_paths(self, files, require_sync_root=False):
+        paths = []
+        for file_info in files:
+            path = _uri_to_path(file_info.get_uri())
+            if path is None:
+                return ()
+            if require_sync_root:
+                try:
+                    path.relative_to(SYNC_ROOT)
+                except ValueError:
+                    return ()
+            paths.append(path)
+        return _collapse_paths(paths)
+
+    def _launch(self, *args):
+        if not LAUNCHER.exists():
+            return
+        subprocess.Popen([str(LAUNCHER), *args], start_new_session=True)
+
+    def update_file_info(self, file_info):
+        path = _uri_to_path(file_info.get_uri())
+        if path is None:
+            return
+        virtual_path = _local_to_virtual(path)
+        if virtual_path is None:
+            return
+        row = _query_state(virtual_path)
+        if row is None:
+            return
+        sync_state = row["sync_state"]
+        public_url = row["public_url"]
+        provider = row["provider"]
+        emblem = STATUS_EMBLEMS.get(sync_state)
+        if emblem:
+            file_info.add_emblem(emblem)
+        if public_url:
+            file_info.add_emblem("emblem-shared")
+        file_info.add_string_attribute("cloudbridge::sync-state", sync_state)
+        if provider:
+            file_info.add_string_attribute("cloudbridge::provider", provider)
+        if public_url:
+            file_info.add_string_attribute("cloudbridge::public-url", public_url)
+
+    def _activate_upload(self, menu, files):
+        paths = self._selected_paths(files)
+        if not paths:
+            return
+        self._launch("upload-selected", *[str(path) for path in paths])
+
+    def _activate_download(self, menu, files):
+        paths = self._selected_paths(files, require_sync_root=True)
+        if not paths:
+            return
+        self._launch("download", *[str(path) for path in paths])
+
+    def _activate_dehydrate(self, menu, files):
+        paths = self._selected_paths(files, require_sync_root=True)
+        if not paths:
+            return
+        self._launch("dehydrate", *[str(path) for path in paths])
+
+    def _activate_share(self, menu, files):
+        paths = self._selected_paths(files)
+        if not paths:
+            return
+        self._launch("share-selected", "--copy", *[str(path) for path in paths])
+
+    def get_file_items(self, window, files):
+        paths = self._selected_paths(files)
+        if not paths:
+            return ()
+        sync_paths = self._selected_paths(files, require_sync_root=True)
+
+        root_item = Caja.MenuItem(
+            name="CloudBridgeCajaProvider::root",
+            label="CloudBridge",
+            tip="CloudBridge actions",
+        )
+        submenu = Caja.Menu()
+        root_item.set_submenu(submenu)
+
+        upload_item = Caja.MenuItem(
+            name="CloudBridgeCajaProvider::upload",
+            label="Upload to Cloud",
+            tip="Upload selected files to CloudBridge",
+        )
+        upload_item.connect("activate", self._activate_upload, files)
+        submenu.append_item(upload_item)
+
+        share_item = Caja.MenuItem(
+            name="CloudBridgeCajaProvider::share",
+            label="Copy Public Link",
+            tip="Create or reuse a public share link and copy it to the clipboard",
+        )
+        share_item.connect("activate", self._activate_share, files)
+        submenu.append_item(share_item)
+
+        if sync_paths:
+            download_item = Caja.MenuItem(
+                name="CloudBridgeCajaProvider::download",
+                label="Download from Cloud",
+                tip="Replace placeholders with full local files",
             )
-            share_item.connect("activate", self._activate_share, files)
-            submenu.append_item(share_item)
+            download_item.connect("activate", self._activate_download, files)
+            submenu.append_item(download_item)
+
+            dehydrate_item = Caja.MenuItem(
+                name="CloudBridgeCajaProvider::dehydrate",
+                label="Free Local Space",
+                tip="Turn local files back into placeholders",
+            )
+            dehydrate_item.connect("activate", self._activate_dehydrate, files)
+            submenu.append_item(dehydrate_item)
 
         return (root_item,)
 """
@@ -297,6 +481,22 @@ def render_thunar_uca_xml(launcher_path: Path, existing_xml: str | None = None) 
         command=f"{shlex.quote(str(launcher_path))} share-selected --copy %F",
         description="Create or reuse a public CloudBridge link [cloudbridge-managed]",
     )
+    _append_thunar_action(
+        root,
+        icon="emblem-downloads",
+        name="CloudBridge Download from Cloud",
+        unique_id="cloudbridge-download-from-cloud",
+        command=f"{shlex.quote(str(launcher_path))} download %F",
+        description="Replace CloudBridge placeholders with full local files [cloudbridge-managed]",
+    )
+    _append_thunar_action(
+        root,
+        icon="user-trash",
+        name="CloudBridge Free Local Space",
+        unique_id="cloudbridge-free-local-space",
+        command=f"{shlex.quote(str(launcher_path))} dehydrate %F",
+        description="Turn local CloudBridge files back into placeholders [cloudbridge-managed]",
+    )
 
     tree = ElementTree.ElementTree(root)
     ElementTree.indent(tree, space="  ")
@@ -326,6 +526,36 @@ def render_nemo_share_action(launcher_path: Path) -> str:
         "Comment=Create or reuse a public CloudBridge link\n"
         f"Exec={shlex.quote(str(launcher_path))} share-selected --copy %F\n"
         "Icon-Name=emblem-shared\n"
+        "Selection=notnone\n"
+        "Extensions=any;\n"
+        "Quote=double\n"
+        "EscapeSpaces=true\n"
+    )
+
+
+def render_nemo_download_action(launcher_path: Path) -> str:
+    return (
+        "[Nemo Action]\n"
+        "Active=true\n"
+        "Name=CloudBridge Download from Cloud\n"
+        "Comment=Replace CloudBridge placeholders with full local files\n"
+        f"Exec={shlex.quote(str(launcher_path))} download %F\n"
+        "Icon-Name=emblem-downloads\n"
+        "Selection=notnone\n"
+        "Extensions=any;\n"
+        "Quote=double\n"
+        "EscapeSpaces=true\n"
+    )
+
+
+def render_nemo_dehydrate_action(launcher_path: Path) -> str:
+    return (
+        "[Nemo Action]\n"
+        "Active=true\n"
+        "Name=CloudBridge Free Local Space\n"
+        "Comment=Turn local CloudBridge files back into placeholders\n"
+        f"Exec={shlex.quote(str(launcher_path))} dehydrate %F\n"
+        "Icon-Name=user-trash\n"
         "Selection=notnone\n"
         "Extensions=any;\n"
         "Quote=double\n"
@@ -364,6 +594,40 @@ def render_caja_share_action_desktop(launcher_path: Path) -> str:
         "MimeTypes=all/all;\n"
         "SelectionCount=>0\n"
         f"Exec={shlex.quote(str(launcher_path))} share-selected --copy %F\n"
+    )
+
+
+def render_caja_download_action_desktop(launcher_path: Path) -> str:
+    return (
+        "[Desktop Entry]\n"
+        "Type=Action\n"
+        "Name=CloudBridge Download from Cloud\n"
+        "Tooltip=Replace CloudBridge placeholders with full local files\n"
+        "Icon=emblem-downloads\n"
+        "Profiles=profile-zero;\n"
+        "\n"
+        "[X-Action-Profile profile-zero]\n"
+        "Name=Default profile\n"
+        "MimeTypes=all/all;\n"
+        "SelectionCount=>0\n"
+        f"Exec={shlex.quote(str(launcher_path))} download %F\n"
+    )
+
+
+def render_caja_dehydrate_action_desktop(launcher_path: Path) -> str:
+    return (
+        "[Desktop Entry]\n"
+        "Type=Action\n"
+        "Name=CloudBridge Free Local Space\n"
+        "Tooltip=Turn local CloudBridge files back into placeholders\n"
+        "Icon=user-trash\n"
+        "Profiles=profile-zero;\n"
+        "\n"
+        "[X-Action-Profile profile-zero]\n"
+        "Name=Default profile\n"
+        "MimeTypes=all/all;\n"
+        "SelectionCount=>0\n"
+        f"Exec={shlex.quote(str(launcher_path))} dehydrate %F\n"
     )
 
 
@@ -522,6 +786,8 @@ def install_nemo_integration(
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-nemo").expanduser()
     upload_action_path = actions_dir / "cloudbridge-upload.nemo_action"
     share_action_path = actions_dir / "cloudbridge-share.nemo_action"
+    download_action_path = actions_dir / "cloudbridge-download.nemo_action"
+    dehydrate_action_path = actions_dir / "cloudbridge-dehydrate.nemo_action"
 
     actions_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
@@ -529,13 +795,22 @@ def install_nemo_integration(
     launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
     upload_action_path.write_text(render_nemo_action(launcher_path.resolve()), encoding="utf-8")
     share_action_path.write_text(render_nemo_share_action(launcher_path.resolve()), encoding="utf-8")
+    download_action_path.write_text(render_nemo_download_action(launcher_path.resolve()), encoding="utf-8")
+    dehydrate_action_path.write_text(render_nemo_dehydrate_action(launcher_path.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
     upload_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
     share_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    download_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    dehydrate_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
     return NemoInstallResult(
-        action_paths=(upload_action_path.resolve(), share_action_path.resolve()),
+        action_paths=(
+            upload_action_path.resolve(),
+            share_action_path.resolve(),
+            download_action_path.resolve(),
+            dehydrate_action_path.resolve(),
+        ),
         launcher_path=launcher_path.resolve(),
     )
 
@@ -546,6 +821,7 @@ def install_caja_integration(
     repo_root: Path | None,
     uv_path: str | None = None,
     launcher_command: str | None = None,
+    extension_dir: Path | None = None,
     actions_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> CajaInstallResult:
@@ -556,24 +832,48 @@ def install_caja_integration(
         uv_path=uv_path,
         launcher_command=launcher_command,
     )
+    extension_dir = (extension_dir or Path.home() / ".local" / "share" / "caja-python" / "extensions").expanduser()
     actions_dir = (actions_dir or Path.home() / ".local" / "share" / "file-manager" / "actions").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-caja").expanduser()
+    extension_path = extension_dir / "cloudbridge_menu.py"
     upload_action_path = actions_dir / "cloudbridge-upload.desktop"
     share_action_path = actions_dir / "cloudbridge-share.desktop"
+    download_action_path = actions_dir / "cloudbridge-download.desktop"
+    dehydrate_action_path = actions_dir / "cloudbridge-dehydrate.desktop"
 
+    extension_dir.mkdir(parents=True, exist_ok=True)
     actions_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
     launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
+    extension_path.write_text(
+        render_caja_extension(
+            launcher_path.resolve(),
+            config.sync_root.resolve(),
+            config.database_path.resolve(),
+        ),
+        encoding="utf-8",
+    )
     upload_action_path.write_text(render_caja_action_desktop(launcher_path.resolve()), encoding="utf-8")
     share_action_path.write_text(render_caja_share_action_desktop(launcher_path.resolve()), encoding="utf-8")
+    download_action_path.write_text(render_caja_download_action_desktop(launcher_path.resolve()), encoding="utf-8")
+    dehydrate_action_path.write_text(render_caja_dehydrate_action_desktop(launcher_path.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    extension_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
     upload_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
     share_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    download_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    dehydrate_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
     return CajaInstallResult(
-        action_paths=(upload_action_path.resolve(), share_action_path.resolve()),
+        extension_path=extension_path.resolve(),
+        action_paths=(
+            upload_action_path.resolve(),
+            share_action_path.resolve(),
+            download_action_path.resolve(),
+            dehydrate_action_path.resolve(),
+        ),
         launcher_path=launcher_path.resolve(),
     )
 

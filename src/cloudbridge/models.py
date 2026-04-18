@@ -106,6 +106,13 @@ class SyncJob:
     updated_at: datetime
 
 
+@dataclass(slots=True, frozen=True)
+class SyncJobResult:
+    job: SyncJob
+    succeeded: bool
+    error: str | None = None
+
+
 def infer_sync_state(
     *,
     has_local: bool,

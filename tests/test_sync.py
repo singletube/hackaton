@@ -98,3 +98,37 @@ async def test_queue_upload_and_download_roundtrip(tmp_path: Path) -> None:
         assert local_file.read_text(encoding="utf-8") == "payload"
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_run_sync_once_emits_job_events(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="memory",
+        yandex_token="test-token",
+        watcher_backend="poll",
+    )
+    config.ensure_directories()
+
+    state = StateDB(config.database_path)
+    await state.connect()
+    provider = MemoryProvider()
+    manager = HybridManager(config, state, provider)
+    try:
+        local_file = config.sync_root / "docs" / "report.txt"
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        local_file.write_text("payload", encoding="utf-8")
+
+        await manager.queue_upload("/docs/report.txt")
+        events = []
+
+        assert await manager.run_sync_once(event_callback=events.append) == 1
+
+        assert len(events) == 1
+        assert events[0].succeeded is True
+        assert events[0].job.operation is not None
+        assert events[0].job.path == "/docs/report.txt"
+    finally:
+        await manager.close()

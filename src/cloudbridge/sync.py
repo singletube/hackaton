@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from .filesystem import scan_local_subtree
-from .models import EntryKind, JobOperation, RemoteEntry, SyncJob, SyncState
+from .models import EntryKind, JobOperation, RemoteEntry, SyncJob, SyncJobResult, SyncState
 from .paths import normalize_virtual_path, parent_path, virtual_to_local_path
 from .providers.base import CloudProvider
 from .state import StateDB
+
+SyncEventCallback = Callable[[SyncJobResult], object | Awaitable[object]]
 
 
 class SyncEngine:
@@ -17,7 +21,7 @@ class SyncEngine:
         self._sync_root = sync_root
         self._concurrency = max(1, concurrency)
 
-    async def run_once(self, limit: int | None = None) -> int:
+    async def run_once(self, limit: int | None = None, *, event_callback: SyncEventCallback | None = None) -> int:
         batch_size = limit or self._concurrency
         jobs = await self._state.claim_jobs(batch_size)
         if not jobs:
@@ -26,14 +30,14 @@ class SyncEngine:
 
         async def run_job(job: SyncJob) -> None:
             async with semaphore:
-                await self._process_job(job)
+                await self._process_job(job, event_callback=event_callback)
 
         async with asyncio.TaskGroup() as group:
             for job in jobs:
                 group.create_task(run_job(job))
         return len(jobs)
 
-    async def _process_job(self, job: SyncJob) -> None:
+    async def _process_job(self, job: SyncJob, *, event_callback: SyncEventCallback | None = None) -> None:
         await self._state.set_sync_state(job.path, SyncState.SYNCING)
         refresh_paths = [job.path]
         try:
@@ -57,9 +61,11 @@ class SyncEngine:
             await self._state.complete_job(job.id)
             for refresh_path in refresh_paths:
                 await self._state.resolve_entry_state(refresh_path)
+            await self._emit_event(SyncJobResult(job=job, succeeded=True), event_callback)
         except Exception as error:
             await self._state.set_sync_state(job.path, SyncState.ERROR, str(error))
             await self._state.fail_job(job, str(error))
+            await self._emit_event(SyncJobResult(job=job, succeeded=False, error=str(error)), event_callback)
 
     async def _upload(self, path: str) -> None:
         normalized = normalize_virtual_path(path)
@@ -133,3 +139,10 @@ class SyncEngine:
             target.rmdir()
             return
         target.unlink(missing_ok=True)
+
+    async def _emit_event(self, event: SyncJobResult, callback: SyncEventCallback | None) -> None:
+        if callback is None:
+            return
+        result = callback(event)
+        if inspect.isawaitable(result):
+            await result

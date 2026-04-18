@@ -16,6 +16,13 @@ The script builds a self-contained package with:
 - public wrapper at `/usr/bin/cloudbridge`
 - install docs under `/usr/share/doc/cloudbridge`
 
+If you install the package on MATE or ALT Linux and want native Caja emblems, make sure the Caja
+Python bindings are present on the target system, for example `python3-caja` or `caja-python`
+depending on the distribution.
+
+For desktop notifications from the background daemon, install `notify-send`, for example through
+`libnotify-bin` on Debian-like systems.
+
 ## Requirements
 
 - `python3`
@@ -41,6 +48,7 @@ These packages provide the runtime binary. The recommended post-install step is:
 
 ```bash
 cloudbridge desktop-setup --manager auto
+cloudbridge gui
 ```
 
 For Nextcloud, complete browser-based login after install:

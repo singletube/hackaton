@@ -88,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--refresh-interval", type=float, default=30.0)
     daemon_parser.add_argument("--once", action="store_true")
 
+    gui_parser = subparsers.add_parser("gui")
+    gui_parser.add_argument("--manager", choices=("auto", "nautilus", "thunar", "nemo", "caja"), default="auto")
+
     setup_yandex_parser = subparsers.add_parser("setup-yandex")
     setup_yandex_parser.add_argument("--client-id")
     setup_yandex_parser.add_argument("--client-secret")
@@ -137,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     caja_parser = subparsers.add_parser("install-caja")
     caja_parser.add_argument("--repo-root", default=str(Path.cwd()))
+    caja_parser.add_argument("--extension-dir")
     caja_parser.add_argument("--actions-dir")
     caja_parser.add_argument("--launcher-path")
     caja_parser.add_argument("--uv-path")
@@ -187,8 +191,31 @@ def resolve_local_source_path(raw_path: str) -> Path:
     return candidate
 
 
+async def share_selected_path(manager: HybridManager, sync_root: Path, raw_path: str) -> str:
+    resolved_path = resolve_cli_path(sync_root, raw_path)
+    candidate = Path(raw_path).expanduser()
+    local_exists = candidate.is_absolute() and candidate.exists()
+
+    if local_exists and resolved_path == raw_path:
+        source = resolve_local_source_path(raw_path)
+        destination = await manager.import_external_path(source)
+        return await manager.share(destination)
+
+    if local_exists:
+        entry = await manager.get_entry(resolved_path)
+        if entry is None or not entry.has_remote:
+            await manager.queue_upload(resolved_path)
+            await manager.run_sync_once(limit=1)
+    return await manager.share(resolved_path)
+
+
 async def run(args: argparse.Namespace) -> int:
     config = AppConfig.from_env()
+    if args.command == "gui":
+        from .gui import launch_gui
+
+        return launch_gui(config, manager_name=args.manager)
+
     if args.command == "setup-yandex":
         client_id = (args.client_id or config.yandex_client_id or "").strip()
         client_secret = (args.client_secret or config.yandex_client_secret or "").strip()
@@ -196,6 +223,7 @@ async def run(args: argparse.Namespace) -> int:
             raise ValueError("Yandex device login requires --client-id and --client-secret, or saved YANDEX_CLIENT_ID / YANDEX_CLIENT_SECRET.")
 
         def handle_yandex_ready(prompt) -> None:
+            print("action=Open the verification URL and enter the user_code shown below. The code is not sent by Yandex in email or SMS.")
             print(f"verification_url={prompt.verification_url}")
             print(f"user_code={prompt.user_code}")
             print(f"browser_opened={str(prompt.browser_opened).lower()}")
@@ -229,6 +257,7 @@ async def run(args: argparse.Namespace) -> int:
 
     if args.command == "setup-nextcloud":
         def handle_nextcloud_ready(prompt) -> None:
+            print("action=Open the login_url in a browser and complete the Nextcloud approval flow there.")
             print(f"login_url={prompt.login_url}")
             print(f"browser_opened={str(prompt.browser_opened).lower()}")
 
@@ -323,10 +352,12 @@ async def run(args: argparse.Namespace) -> int:
             repo_root=Path(args.repo_root),
             uv_path=args.uv_path,
             launcher_command=args.launcher_command,
+            extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
             actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
             launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
         )
         print(f"launcher={result.launcher_path}")
+        print(f"extension={result.extension_path}")
         print("actions=" + ",".join(str(path) for path in result.action_paths))
         print("restart_caja=caja -q")
         return 0
@@ -384,11 +415,13 @@ async def run(args: argparse.Namespace) -> int:
             repo_root=Path(args.repo_root),
             uv_path=args.uv_path,
             launcher_command=args.launcher_command,
+            extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
             actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
             launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
         )
         print("manager=caja")
         print(f"launcher={result.launcher_path}")
+        print(f"extension={result.extension_path}")
         print("actions=" + ",".join(str(path) for path in result.action_paths))
         print("restart=caja -q")
         return 0
@@ -448,6 +481,7 @@ async def run(args: argparse.Namespace) -> int:
                 )
                 print("manager=caja")
                 print(f"launcher={result.launcher_path}")
+                print(f"extension={result.extension_path}")
                 print("actions=" + ",".join(str(path) for path in result.action_paths))
                 print("restart=caja -q")
 
@@ -573,14 +607,7 @@ async def run(args: argparse.Namespace) -> int:
         if args.command == "share-selected":
             urls: list[str] = []
             for raw_path in args.paths:
-                resolved_path = resolve_cli_path(config.sync_root, raw_path)
-                candidate = Path(raw_path).expanduser()
-                if candidate.is_absolute() and resolved_path == raw_path:
-                    source = resolve_local_source_path(raw_path)
-                    destination = await manager.import_external_path(source)
-                    url = await manager.share(destination)
-                else:
-                    url = await manager.share(resolved_path)
+                url = await share_selected_path(manager, config.sync_root, raw_path)
                 urls.append(url)
                 print(url)
             if args.copy:

@@ -9,11 +9,12 @@ from uuid import uuid4
 
 from .config import AppConfig
 from .filesystem import materialize_remote_placeholder_file, materialize_remote_placeholders, scan_local_subtree, scan_local_tree, stat_local_entry
-from .models import EntryKind, IndexedEntry, JobOperation, SyncState
+from .models import EntryKind, IndexedEntry, JobOperation, SyncJobResult, SyncState
+from .notifications import format_entry_error_notification, format_sync_batch_notification, send_desktop_notification
 from .paths import basename, join_virtual_path, normalize_virtual_path, parent_path, virtual_to_local_path
 from .providers import CloudProvider, NextcloudProvider, YandexDiskProvider
 from .state import StateDB
-from .sync import SyncEngine
+from .sync import SyncEngine, SyncEventCallback
 from .watcher import LocalWatcher
 
 
@@ -94,13 +95,18 @@ class HybridManager:
         await self._state.enqueue_job(JobOperation.DELETE_LOCAL, normalized)
         await self._state.set_sync_state(normalized, SyncState.QUEUED)
 
-    async def run_sync_once(self, limit: int | None = None) -> int:
-        return await self._sync.run_once(limit)
+    async def run_sync_once(
+        self,
+        limit: int | None = None,
+        *,
+        event_callback: SyncEventCallback | None = None,
+    ) -> int:
+        return await self._sync.run_once(limit, event_callback=event_callback)
 
-    async def drain_sync_queue(self, limit: int | None = None) -> int:
+    async def drain_sync_queue(self, limit: int | None = None, *, event_callback: SyncEventCallback | None = None) -> int:
         processed = 0
         while True:
-            current = await self.run_sync_once(limit)
+            current = await self.run_sync_once(limit, event_callback=event_callback)
             if current == 0:
                 return processed
             processed += current
@@ -191,8 +197,10 @@ class HybridManager:
             self._provider.name,
             backend=self._config.watcher_backend,
         )
+        known_error_entries: set[tuple[str, str]] = set()
         try:
             await self.discover()
+            await self._notify_error_entries(known_error_entries)
             await self._queue_startup_uploads()
             await watcher.start()
             print(f"daemon watcher={watcher.backend_name}")
@@ -201,13 +209,22 @@ class HybridManager:
             while True:
                 timeout = 0.0 if once else poll_interval
                 changes = await watcher.poll(timeout=timeout)
-                while await self.run_sync_once(limit=self._config.sync_concurrency):
-                    continue
+                while True:
+                    batch_events: list[SyncJobResult] = []
+                    processed = await self.run_sync_once(
+                        limit=self._config.sync_concurrency,
+                        event_callback=batch_events.append,
+                    )
+                    if processed == 0:
+                        break
+                    self._notify_sync_batch(batch_events)
+                    await self._notify_error_entries(known_error_entries)
 
                 if refresh_interval > 0 and time.monotonic() >= next_refresh_at:
                     await self.discover()
                     await self._queue_startup_uploads()
                     await watcher.seed()
+                    await self._notify_error_entries(known_error_entries)
                     next_refresh_at = time.monotonic() + refresh_interval
 
                 if once:
@@ -228,6 +245,27 @@ class HybridManager:
         for path in upload_roots:
             await self._state.enqueue_job(JobOperation.UPLOAD, path)
             await self._state.set_sync_state(path, SyncState.QUEUED)
+
+    def _notify_sync_batch(self, events: list[SyncJobResult]) -> None:
+        payload = format_sync_batch_notification(events)
+        if payload is None:
+            return
+        summary, body = payload
+        send_desktop_notification(summary, body)
+
+    async def _notify_error_entries(self, known_errors: set[tuple[str, str]]) -> None:
+        error_entries = await self._state.list_entries_by_states(SyncState.ERROR)
+        current_errors: set[tuple[str, str]] = set()
+        for entry in error_entries:
+            detail = entry.last_error or ("локальный и облачный типы не совпадают" if entry.kind_conflict else "неизвестная ошибка синхронизации")
+            signature = (entry.path, detail)
+            current_errors.add(signature)
+            if signature in known_errors:
+                continue
+            summary, body = format_entry_error_notification(entry)
+            send_desktop_notification(summary, body)
+        known_errors.clear()
+        known_errors.update(current_errors)
 
     async def _dedupe_virtual_path(self, path: str) -> str:
         normalized = normalize_virtual_path(path)

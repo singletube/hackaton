@@ -13,9 +13,14 @@ from cloudbridge.integration import (
     install_systemd_user_service,
     install_thunar_integration,
     render_caja_action_desktop,
+    render_caja_dehydrate_action_desktop,
+    render_caja_download_action_desktop,
+    render_caja_extension,
     render_caja_share_action_desktop,
     render_launcher_script,
     render_nautilus_extension,
+    render_nemo_dehydrate_action,
+    render_nemo_download_action,
     render_nemo_action,
     render_nemo_share_action,
     render_systemd_user_service,
@@ -126,6 +131,10 @@ def test_render_thunar_uca_xml_binds_upload_action(tmp_path: Path) -> None:
     assert "upload-selected %F" in content
     assert "<name>CloudBridge Copy Public Link</name>" in content
     assert "share-selected --copy %F" in content
+    assert "<name>CloudBridge Download from Cloud</name>" in content
+    assert "download %F" in content
+    assert "<name>CloudBridge Free Local Space</name>" in content
+    assert "dehydrate %F" in content
     assert "cloudbridge-managed" in content
 
 
@@ -145,6 +154,22 @@ def test_render_nemo_share_action_binds_share_action(tmp_path: Path) -> None:
     assert "Copy Public Link" in content
 
 
+def test_render_nemo_download_action_binds_download_action(tmp_path: Path) -> None:
+    content = render_nemo_download_action(tmp_path / "cloudbridge-nemo")
+
+    assert "[Nemo Action]" in content
+    assert "download %F" in content
+    assert "Download from Cloud" in content
+
+
+def test_render_nemo_dehydrate_action_binds_dehydrate_action(tmp_path: Path) -> None:
+    content = render_nemo_dehydrate_action(tmp_path / "cloudbridge-nemo")
+
+    assert "[Nemo Action]" in content
+    assert "dehydrate %F" in content
+    assert "Free Local Space" in content
+
+
 def test_render_caja_action_desktop_binds_upload_action(tmp_path: Path) -> None:
     content = render_caja_action_desktop(tmp_path / "cloudbridge-caja")
 
@@ -159,6 +184,35 @@ def test_render_caja_share_action_desktop_binds_share_action(tmp_path: Path) -> 
     assert "[Desktop Entry]" in content
     assert "Type=Action" in content
     assert "share-selected --copy %F" in content
+
+
+def test_render_caja_download_action_desktop_binds_download_action(tmp_path: Path) -> None:
+    content = render_caja_download_action_desktop(tmp_path / "cloudbridge-caja")
+
+    assert "[Desktop Entry]" in content
+    assert "Type=Action" in content
+    assert "download %F" in content
+
+
+def test_render_caja_dehydrate_action_desktop_binds_dehydrate_action(tmp_path: Path) -> None:
+    content = render_caja_dehydrate_action_desktop(tmp_path / "cloudbridge-caja")
+
+    assert "[Desktop Entry]" in content
+    assert "Type=Action" in content
+    assert "dehydrate %F" in content
+
+
+def test_render_caja_extension_binds_launcher_and_actions(tmp_path: Path) -> None:
+    content = render_caja_extension(tmp_path / "cloudbridge-caja", tmp_path / "mirror", tmp_path / "state.db")
+
+    assert "\"upload-selected\"" in content
+    assert "Caja.InfoProvider" in content
+    assert "DATABASE_PATH =" in content
+    assert "cloudbridge::sync-state" in content
+    assert "label=\"Upload to Cloud\"" in content
+    assert "label=\"Download from Cloud\"" in content
+    assert "label=\"Free Local Space\"" in content
+    assert "label=\"Copy Public Link\"" in content
 
 
 def test_install_nautilus_integration_writes_files(tmp_path: Path) -> None:
@@ -272,6 +326,9 @@ def test_install_thunar_integration_writes_files(tmp_path: Path) -> None:
     config_content = result.config_path.read_text(encoding="utf-8")
     assert "CLOUDBRIDGE_IMPORT_ROOT" in launcher_content
     assert "upload-selected %F" in config_content
+    assert "share-selected --copy %F" in config_content
+    assert "download %F" in config_content
+    assert "dehydrate %F" in config_content
 
 
 def test_install_nemo_integration_writes_files(tmp_path: Path) -> None:
@@ -295,11 +352,13 @@ def test_install_nemo_integration_writes_files(tmp_path: Path) -> None:
     )
 
     assert result.launcher_path.exists()
-    assert len(result.action_paths) == 2
+    assert len(result.action_paths) == 4
     assert all(path.exists() for path in result.action_paths)
     assert "CLOUDBRIDGE_IMPORT_ROOT" in result.launcher_path.read_text(encoding="utf-8")
     assert any("upload-selected %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
     assert any("share-selected --copy %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
+    assert any("download %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
+    assert any("dehydrate %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
 
 
 def test_install_caja_integration_writes_files(tmp_path: Path) -> None:
@@ -318,16 +377,22 @@ def test_install_caja_integration_writes_files(tmp_path: Path) -> None:
         config,
         repo_root=tmp_path / "repo",
         uv_path=str(uv_path),
+        extension_dir=tmp_path / "extensions",
         actions_dir=tmp_path / "actions",
         launcher_path=tmp_path / "bin" / "cloudbridge-caja",
     )
 
     assert result.launcher_path.exists()
-    assert len(result.action_paths) == 2
+    assert result.extension_path.exists()
+    assert len(result.action_paths) == 4
     assert all(path.exists() for path in result.action_paths)
     assert "CLOUDBRIDGE_IMPORT_ROOT" in result.launcher_path.read_text(encoding="utf-8")
+    extension_content = result.extension_path.read_text(encoding="utf-8")
+    assert repr(str(result.launcher_path)) in extension_content
     assert any("upload-selected %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
     assert any("share-selected --copy %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
+    assert any("download %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
+    assert any("dehydrate %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
 
 
 def test_install_nautilus_integration_requires_token_for_yandex(tmp_path: Path) -> None:
