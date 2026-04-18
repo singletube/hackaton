@@ -101,7 +101,7 @@ class YandexDiskProvider(StorageProvider):
             if response.status != 200:
                 error_data = await response.json()
                 logger.error("Failed to get upload URL for %s: %s", remote_path, error_data)
-                return
+                raise RuntimeError(f"Failed to get upload URL for {remote_path}: {error_data}")
             data = await response.json()
             upload_url = data['href']
 
@@ -110,7 +110,8 @@ class YandexDiskProvider(StorageProvider):
             async with session.put(upload_url, data=f) as response:
                 if response.status not in (201, 202):
                     logger.error("Failed to upload content for %s", remote_path)
-                    return
+                    raise RuntimeError(f"Failed to upload content for {remote_path}: HTTP {response.status}")
+        return True
 
     async def delete_file(self, remote_path: str):
         """Deletes a resource from Yandex.Disk (moves to Trash)."""
