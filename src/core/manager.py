@@ -1,9 +1,13 @@
 import logging
 import os
+import posixpath
+from pathlib import Path
 from typing import List, Optional, AsyncIterator
 from .database import StateDB
 from .provider.base import StorageProvider
 from .models import ItemType, FileStatus, CloudItem
+from .xattr import get_placeholder_remote_path, set_placeholder_remote_path
+from .ignore_list import is_ignored
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +90,25 @@ class HybridManager:
             size = os.path.getsize(local_path)
             mtime_ts = os.path.getmtime(local_path)
             from datetime import datetime
-            mtime_iso = datetime.fromtimestamp(mtime_ts).isoformat()
+            mtime = datetime.fromtimestamp(mtime_ts)
+            mtime_iso = mtime.isoformat()
             logger.debug("Captured metadata for %s: size=%d, mtime=%s", local_path, size, mtime_iso)
+            await self.db.upsert_cloud_item(
+                CloudItem(
+                    path=remote_path,
+                    name=os.path.basename(remote_path),
+                    type=ItemType.FILE,
+                    size=size,
+                    modified_at=mtime,
+                ),
+                status=FileStatus.OFFLINE,
+            )
             
             # De-hydration: truncate local file to 0 bytes
             logger.info("De-hydrating (stubbing) local file: %s (cloud size: %d)", local_path, size)
             with open(local_path, "wb") as f:
                 f.truncate(0)
+            set_placeholder_remote_path(local_path, remote_path)
             
             await self.db.update_status(remote_path, FileStatus.OFFLINE, local_path, 
                                       size=size, modified_at=mtime_iso)
@@ -124,6 +140,27 @@ class HybridManager:
         except Exception as e:
             logger.error("Failed to move remote file %s: %s", src_path, e)
 
+    async def download_file_to_path(self, remote_path: str, local_path: str):
+        """Downloads a remote file to an exact local path using an atomic replace."""
+        destination = Path(local_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = destination.with_name(f".{destination.name}.cloudbridge-download")
+
+        logger.info("Downloading %s to %s", remote_path, destination)
+        try:
+            with tmp_path.open("wb") as f:
+                async for chunk in self.provider.get_file_content(remote_path):
+                    if chunk:
+                        f.write(chunk)
+            tmp_path.replace(destination)
+            logger.info("Downloaded real file to %s", destination)
+        except Exception:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+
     async def prune_remote_only_files(self, local_root: str):
         """Removes files from the cloud that do not exist locally."""
         logger.info("Pruning cloud files not present in %s", local_root)
@@ -139,18 +176,89 @@ class HybridManager:
                 logger.info("Pruning orphan cloud file: %s", item.path)
                 await self.delete_remote_file(item.path)
 
+    def _local_path_for_remote(self, local_root: str, remote_path: str) -> Path:
+        root = self.remote_root.rstrip("/") or "/"
+        relative_path = posixpath.relpath(remote_path, root)
+        if relative_path == ".":
+            return Path(local_root)
+        return Path(local_root).joinpath(*[part for part in relative_path.split("/") if part])
+
+    async def materialize_remote_placeholders(self, local_root: str):
+        """Creates local placeholders for cloud files that are missing locally."""
+        logger.info("Materializing remote placeholders under %s", local_root)
+        created_files = 0
+        created_dirs = 0
+        skipped = 0
+
+        remote_items = await self.provider.get_all_files_recursive(self.remote_root)
+        remote_items.sort(key=lambda item: (item.path.count("/"), item.path))
+
+        for item in remote_items:
+            if is_ignored(item.path):
+                skipped += 1
+                continue
+
+            await self.db.upsert_cloud_item(item, status=FileStatus.OFFLINE)
+            local_path = self._local_path_for_remote(local_root, item.path)
+
+            if item.type == ItemType.DIRECTORY:
+                if not local_path.exists():
+                    local_path.mkdir(parents=True, exist_ok=True)
+                    created_dirs += 1
+                continue
+
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            if local_path.exists():
+                if local_path.is_file() and local_path.stat().st_size == 0:
+                    set_placeholder_remote_path(local_path, item.path)
+                    await self.db.update_status(
+                        item.path,
+                        FileStatus.OFFLINE,
+                        str(local_path),
+                        size=item.size,
+                        modified_at=item.modified_at.isoformat(),
+                    )
+                skipped += 1
+                continue
+
+            with local_path.open("wb") as f:
+                f.truncate(0)
+            set_placeholder_remote_path(local_path, item.path)
+            await self.db.update_status(
+                item.path,
+                FileStatus.OFFLINE,
+                str(local_path),
+                size=item.size,
+                modified_at=item.modified_at.isoformat(),
+            )
+            created_files += 1
+
+        logger.info(
+            "Remote placeholder materialization complete: files=%d dirs=%d skipped=%d",
+            created_files,
+            created_dirs,
+            skipped,
+        )
+
     async def bootstrap_local_sync(self, local_root: str):
         """Walks the local directory and ensures all items exist in the cloud."""
         logger.info("Starting initial bootstrap sync for %s", local_root)
+        uploaded = 0
+        skipped = 0
         
         for root, dirs, files in os.walk(local_root):
             # 1. Sync Directories
-            for d in dirs:
+            for d in list(dirs):
                 local_dir_path = os.path.join(root, d)
                 relative_path = os.path.relpath(local_dir_path, local_root)
                 remote_path = os.path.join(self.remote_root, relative_path).replace(os.sep, '/')
+                if is_ignored(remote_path):
+                    logger.info("Bootstrap: skipping ignored directory %s", remote_path)
+                    dirs.remove(d)
+                    skipped += 1
+                    continue
                 
-                logger.debug("Ensuring remote directory: %s", remote_path)
+                logger.info("Bootstrap: ensuring remote directory %s", remote_path)
                 await self.provider.create_directory(remote_path)
             
             # 2. Sync Files
@@ -158,15 +266,37 @@ class HybridManager:
                 local_file_path = os.path.join(root, f)
                 relative_path = os.path.relpath(local_file_path, local_root)
                 remote_path = os.path.join(self.remote_root, relative_path).replace(os.sep, '/')
+                if is_ignored(remote_path):
+                    logger.info("Bootstrap: skipping ignored file %s", remote_path)
+                    skipped += 1
+                    continue
+                try:
+                    size = os.path.getsize(local_file_path)
+                except OSError as e:
+                    logger.warning("Bootstrap: cannot stat %s: %s", local_file_path, e)
+                    skipped += 1
+                    continue
+
+                is_placeholder = False
+                if size == 0:
+                    placeholder_remote = get_placeholder_remote_path(local_file_path)
+                    item = await self.db.get_item(remote_path)
+                    is_placeholder = bool(placeholder_remote) or (
+                        item is not None and item["status"] == FileStatus.OFFLINE.value
+                    )
+
+                if is_placeholder:
+                    logger.info("Bootstrap: skipping local placeholder %s", local_file_path)
+                    skipped += 1
+                    continue
                 
-                # Check if file exists in DB and is already handled (SYNCED or OFFLINE stub)
-                item = await self.db.get_item(remote_path)
-                already_synced = item and (item['status'] == FileStatus.SYNCED.value or 
-                                          item['status'] == FileStatus.OFFLINE.value)
-                
-                if not already_synced:
-                    logger.info("Bootstrap: uploading new file %s", remote_path)
-                    await self.upload_file(local_file_path, remote_path)
+                # Any real local file should be pushed to cloud on startup and then stubbed locally.
+                # Existing OFFLINE entries represent cloud placeholders and must not block upload.
+                logger.info("Bootstrap: uploading real local file %s", remote_path)
+                await self.upload_file(local_file_path, remote_path)
+                uploaded += 1
+
+        logger.info("Bootstrap complete for %s: uploaded=%d skipped=%d", local_root, uploaded, skipped)
 
     async def ensure_placeholder(self, path: str):
         pass
