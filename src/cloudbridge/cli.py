@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
 from pathlib import Path
+import shutil
 
+from .clipboard import copy_text_to_clipboard
 from .config import AppConfig
 from .filesystem import is_placeholder_file
 from .hybrid import HybridManager
@@ -16,7 +19,10 @@ from .integration import (
     install_thunar_integration,
 )
 from .models import EntryKind, IndexedEntry
+from .notifications import send_desktop_notification
 from .paths import local_to_virtual_path, virtual_to_local_path
+from .providers import NextcloudProvider, YandexDiskProvider
+from .setup import run_nextcloud_login_flow, run_yandex_device_login_flow
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     share_parser = subparsers.add_parser("share")
     share_parser.add_argument("path")
+    share_parser.add_argument("--copy", action="store_true")
+
+    share_selected_parser = subparsers.add_parser("share-selected")
+    share_selected_parser.add_argument("--copy", action="store_true")
+    share_selected_parser.add_argument("paths", nargs="+")
 
     queue_parser = subparsers.add_parser("queue")
     queue_subparsers = queue_parser.add_subparsers(dest="queue_command", required=True)
@@ -76,6 +87,22 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--poll-interval", type=float, default=2.0)
     daemon_parser.add_argument("--refresh-interval", type=float, default=30.0)
     daemon_parser.add_argument("--once", action="store_true")
+
+    setup_yandex_parser = subparsers.add_parser("setup-yandex")
+    setup_yandex_parser.add_argument("--client-id")
+    setup_yandex_parser.add_argument("--client-secret")
+    setup_yandex_parser.add_argument(
+        "--scope",
+        default="cloud_api:disk.read cloud_api:disk.write cloud_api:disk.info",
+    )
+    setup_yandex_parser.add_argument("--timeout", type=float, default=900.0)
+    setup_yandex_parser.add_argument("--no-browser", action="store_true")
+
+    setup_nextcloud_parser = subparsers.add_parser("setup-nextcloud")
+    setup_nextcloud_parser.add_argument("--server", required=True)
+    setup_nextcloud_parser.add_argument("--timeout", type=float, default=600.0)
+    setup_nextcloud_parser.add_argument("--poll-interval", type=float, default=1.0)
+    setup_nextcloud_parser.add_argument("--no-browser", action="store_true")
 
     service_parser = subparsers.add_parser("install-service")
     service_parser.add_argument("--repo-root", default=str(Path.cwd()))
@@ -125,6 +152,15 @@ def build_parser() -> argparse.ArgumentParser:
     fm_parser.add_argument("--uv-path")
     fm_parser.add_argument("--launcher-command")
 
+    desktop_parser = subparsers.add_parser("desktop-setup")
+    desktop_parser.add_argument("--manager", choices=("auto", "nautilus", "thunar", "nemo", "caja"), default="auto")
+    desktop_parser.add_argument("--skip-filemanager", action="store_true")
+    desktop_parser.add_argument("--skip-service", action="store_true")
+    desktop_parser.add_argument("--service-name", default="cloudbridge")
+    desktop_parser.add_argument("--poll-interval", type=float, default=2.0)
+    desktop_parser.add_argument("--refresh-interval", type=float, default=30.0)
+    desktop_parser.add_argument("--launcher-command")
+
     return parser
 
 
@@ -153,6 +189,284 @@ def resolve_local_source_path(raw_path: str) -> Path:
 
 async def run(args: argparse.Namespace) -> int:
     config = AppConfig.from_env()
+    if args.command == "setup-yandex":
+        client_id = (args.client_id or config.yandex_client_id or "").strip()
+        client_secret = (args.client_secret or config.yandex_client_secret or "").strip()
+        if not client_id or not client_secret:
+            raise ValueError("Yandex device login requires --client-id and --client-secret, or saved YANDEX_CLIENT_ID / YANDEX_CLIENT_SECRET.")
+
+        def handle_yandex_ready(prompt) -> None:
+            print(f"verification_url={prompt.verification_url}")
+            print(f"user_code={prompt.user_code}")
+            print(f"browser_opened={str(prompt.browser_opened).lower()}")
+
+        result = await run_yandex_device_login_flow(
+            client_id,
+            client_secret,
+            scope=args.scope,
+            open_browser=not args.no_browser,
+            timeout=args.timeout,
+            on_ready=handle_yandex_ready,
+        )
+
+        provider = YandexDiskProvider(result.access_token)
+        try:
+            if await provider.stat("/") is None:
+                raise RuntimeError("Yandex login completed, but the Disk root is not accessible.")
+        finally:
+            await provider.close()
+
+        updated_config = replace(
+            config,
+            provider_name="yandex",
+            yandex_token=result.access_token,
+            yandex_client_id=client_id,
+            yandex_client_secret=client_secret,
+        )
+        updated_config.write_persisted_settings()
+        print(f"config={updated_config.resolved_config_path}")
+        return 0
+
+    if args.command == "setup-nextcloud":
+        def handle_nextcloud_ready(prompt) -> None:
+            print(f"login_url={prompt.login_url}")
+            print(f"browser_opened={str(prompt.browser_opened).lower()}")
+
+        result = await run_nextcloud_login_flow(
+            args.server,
+            open_browser=not args.no_browser,
+            timeout=args.timeout,
+            poll_interval=args.poll_interval,
+            on_ready=handle_nextcloud_ready,
+        )
+        provider = NextcloudProvider(result.server_url, result.login_name, result.app_password)
+        try:
+            if await provider.stat("/") is None:
+                raise RuntimeError("Nextcloud login completed, but the WebDAV root is not accessible.")
+        finally:
+            await provider.close()
+
+        updated_config = replace(
+            config,
+            provider_name="nextcloud",
+            nextcloud_url=result.server_url,
+            nextcloud_username=result.login_name,
+            nextcloud_password=result.app_password,
+            yandex_token=None,
+        )
+        updated_config.write_persisted_settings()
+        print(f"server={result.server_url}")
+        print(f"username={result.login_name}")
+        print(f"config={updated_config.resolved_config_path}")
+        return 0
+
+    if args.command == "install-service":
+        result = install_systemd_user_service(
+            config,
+            repo_root=Path(args.repo_root) if args.repo_root else None,
+            uv_path=args.uv_path,
+            launcher_command=args.launcher_command,
+            launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+            unit_path=Path(args.unit_path).expanduser() if args.unit_path else None,
+            service_name=args.service_name,
+            poll_interval=args.poll_interval,
+            refresh_interval=args.refresh_interval,
+        )
+        print(f"service={result.service_name}")
+        print(f"launcher={result.launcher_path}")
+        print(f"unit={result.unit_path}")
+        print("reload=systemctl --user daemon-reload")
+        print(f"enable=systemctl --user enable --now {result.service_name}.service")
+        return 0
+    if args.command == "install-nautilus":
+        result = install_nautilus_integration(
+            config,
+            repo_root=Path(args.repo_root),
+            uv_path=args.uv_path,
+            launcher_command=args.launcher_command,
+            extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
+            launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+        )
+        print(f"launcher={result.launcher_path}")
+        print(f"extension={result.extension_path}")
+        print("restart_nautilus=nautilus -q")
+        return 0
+    if args.command == "install-thunar":
+        result = install_thunar_integration(
+            config,
+            repo_root=Path(args.repo_root),
+            uv_path=args.uv_path,
+            launcher_command=args.launcher_command,
+            config_path=Path(args.config_path).expanduser() if args.config_path else None,
+            launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+        )
+        print(f"launcher={result.launcher_path}")
+        print(f"config={result.config_path}")
+        print("restart_thunar=thunar -q")
+        return 0
+    if args.command == "install-nemo":
+        result = install_nemo_integration(
+            config,
+            repo_root=Path(args.repo_root),
+            uv_path=args.uv_path,
+            launcher_command=args.launcher_command,
+            actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
+            launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+        )
+        print(f"launcher={result.launcher_path}")
+        print("actions=" + ",".join(str(path) for path in result.action_paths))
+        print("restart_nemo=nemo -q")
+        return 0
+    if args.command == "install-caja":
+        result = install_caja_integration(
+            config,
+            repo_root=Path(args.repo_root),
+            uv_path=args.uv_path,
+            launcher_command=args.launcher_command,
+            actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
+            launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+        )
+        print(f"launcher={result.launcher_path}")
+        print("actions=" + ",".join(str(path) for path in result.action_paths))
+        print("restart_caja=caja -q")
+        return 0
+    if args.command == "install-filemanager":
+        manager_name = args.manager
+        if manager_name == "auto":
+            detected = detect_file_manager()
+            if detected is None:
+                raise RuntimeError("Could not detect a supported file manager. Use --manager nautilus, thunar, nemo, or caja.")
+            manager_name = detected
+        if manager_name == "nautilus":
+            result = install_nautilus_integration(
+                config,
+                repo_root=Path(args.repo_root),
+                uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
+                extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
+                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+            )
+            print("manager=nautilus")
+            print(f"launcher={result.launcher_path}")
+            print(f"extension={result.extension_path}")
+            print("restart=nautilus -q")
+            return 0
+        if manager_name == "thunar":
+            result = install_thunar_integration(
+                config,
+                repo_root=Path(args.repo_root),
+                uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
+                config_path=Path(args.config_path).expanduser() if args.config_path else None,
+                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+            )
+            print("manager=thunar")
+            print(f"launcher={result.launcher_path}")
+            print(f"config={result.config_path}")
+            print("restart=thunar -q")
+            return 0
+        if manager_name == "nemo":
+            result = install_nemo_integration(
+                config,
+                repo_root=Path(args.repo_root),
+                uv_path=args.uv_path,
+                launcher_command=args.launcher_command,
+                actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
+                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+            )
+            print("manager=nemo")
+            print(f"launcher={result.launcher_path}")
+            print("actions=" + ",".join(str(path) for path in result.action_paths))
+            print("restart=nemo -q")
+            return 0
+        result = install_caja_integration(
+            config,
+            repo_root=Path(args.repo_root),
+            uv_path=args.uv_path,
+            launcher_command=args.launcher_command,
+            actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
+            launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
+        )
+        print("manager=caja")
+        print(f"launcher={result.launcher_path}")
+        print("actions=" + ",".join(str(path) for path in result.action_paths))
+        print("restart=caja -q")
+        return 0
+
+    if args.command == "desktop-setup":
+        launcher_command = args.launcher_command or _default_installed_launcher_command()
+        manager = await HybridManager.from_config(config)
+        try:
+            await manager.bootstrap()
+        finally:
+            await manager.close()
+        print(f"database={config.database_path}")
+        print(f"config={config.resolved_config_path}")
+
+        if not args.skip_filemanager:
+            manager_name = args.manager
+            if manager_name == "auto":
+                detected = detect_file_manager()
+                if detected is None:
+                    raise RuntimeError("Could not detect a supported file manager. Use --manager nautilus, thunar, nemo, or caja.")
+                manager_name = detected
+            if manager_name == "nautilus":
+                result = install_nautilus_integration(
+                    config,
+                    repo_root=None,
+                    launcher_command=launcher_command,
+                )
+                print("manager=nautilus")
+                print(f"launcher={result.launcher_path}")
+                print(f"extension={result.extension_path}")
+                print("restart=nautilus -q")
+            elif manager_name == "thunar":
+                result = install_thunar_integration(
+                    config,
+                    repo_root=None,
+                    launcher_command=launcher_command,
+                )
+                print("manager=thunar")
+                print(f"launcher={result.launcher_path}")
+                print(f"config_path={result.config_path}")
+                print("restart=thunar -q")
+            elif manager_name == "nemo":
+                result = install_nemo_integration(
+                    config,
+                    repo_root=None,
+                    launcher_command=launcher_command,
+                )
+                print("manager=nemo")
+                print(f"launcher={result.launcher_path}")
+                print("actions=" + ",".join(str(path) for path in result.action_paths))
+                print("restart=nemo -q")
+            else:
+                result = install_caja_integration(
+                    config,
+                    repo_root=None,
+                    launcher_command=launcher_command,
+                )
+                print("manager=caja")
+                print(f"launcher={result.launcher_path}")
+                print("actions=" + ",".join(str(path) for path in result.action_paths))
+                print("restart=caja -q")
+
+        if not args.skip_service:
+            result = install_systemd_user_service(
+                config,
+                repo_root=None,
+                launcher_command=launcher_command,
+                service_name=args.service_name,
+                poll_interval=args.poll_interval,
+                refresh_interval=args.refresh_interval,
+            )
+            print(f"service={result.service_name}")
+            print(f"service_launcher={result.launcher_path}")
+            print(f"unit={result.unit_path}")
+            print("reload=systemctl --user daemon-reload")
+            print(f"enable=systemctl --user enable --now {result.service_name}.service")
+        return 0
+
     manager = await HybridManager.from_config(config)
     try:
         if args.command == "init":
@@ -248,7 +562,32 @@ async def run(args: argparse.Namespace) -> int:
             print(requested_path)
             return 0
         if args.command == "share":
-            print(await manager.share(resolve_cli_path(config.sync_root, args.path)))
+            url = await manager.share(resolve_cli_path(config.sync_root, args.path))
+            print(url)
+            if args.copy:
+                copied = copy_text_to_clipboard(url)
+                print(f"clipboard={str(copied).lower()}")
+                if copied:
+                    send_desktop_notification("CloudBridge", "Public link copied to clipboard.")
+            return 0
+        if args.command == "share-selected":
+            urls: list[str] = []
+            for raw_path in args.paths:
+                resolved_path = resolve_cli_path(config.sync_root, raw_path)
+                candidate = Path(raw_path).expanduser()
+                if candidate.is_absolute() and resolved_path == raw_path:
+                    source = resolve_local_source_path(raw_path)
+                    destination = await manager.import_external_path(source)
+                    url = await manager.share(destination)
+                else:
+                    url = await manager.share(resolved_path)
+                urls.append(url)
+                print(url)
+            if args.copy:
+                copied = copy_text_to_clipboard("\n".join(urls))
+                print(f"clipboard={str(copied).lower()}")
+                if copied:
+                    send_desktop_notification("CloudBridge", "Public links copied to clipboard.")
             return 0
         if args.command == "queue":
             if args.queue_command == "upload":
@@ -281,138 +620,6 @@ async def run(args: argparse.Namespace) -> int:
                 once=args.once,
             )
             return 0
-        if args.command == "install-service":
-            result = install_systemd_user_service(
-                config,
-                repo_root=Path(args.repo_root) if args.repo_root else None,
-                uv_path=args.uv_path,
-                launcher_command=args.launcher_command,
-                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-                unit_path=Path(args.unit_path).expanduser() if args.unit_path else None,
-                service_name=args.service_name,
-                poll_interval=args.poll_interval,
-                refresh_interval=args.refresh_interval,
-            )
-            print(f"service={result.service_name}")
-            print(f"launcher={result.launcher_path}")
-            print(f"unit={result.unit_path}")
-            print("reload=systemctl --user daemon-reload")
-            print(f"enable=systemctl --user enable --now {result.service_name}.service")
-            return 0
-        if args.command == "install-nautilus":
-            result = install_nautilus_integration(
-                config,
-                repo_root=Path(args.repo_root),
-                uv_path=args.uv_path,
-                launcher_command=args.launcher_command,
-                extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
-                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-            )
-            print(f"launcher={result.launcher_path}")
-            print(f"extension={result.extension_path}")
-            print("restart_nautilus=nautilus -q")
-            return 0
-        if args.command == "install-thunar":
-            result = install_thunar_integration(
-                config,
-                repo_root=Path(args.repo_root),
-                uv_path=args.uv_path,
-                launcher_command=args.launcher_command,
-                config_path=Path(args.config_path).expanduser() if args.config_path else None,
-                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-            )
-            print(f"launcher={result.launcher_path}")
-            print(f"config={result.config_path}")
-            print("restart_thunar=thunar -q")
-            return 0
-        if args.command == "install-nemo":
-            result = install_nemo_integration(
-                config,
-                repo_root=Path(args.repo_root),
-                uv_path=args.uv_path,
-                launcher_command=args.launcher_command,
-                actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
-                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-            )
-            print(f"launcher={result.launcher_path}")
-            print(f"action={result.action_path}")
-            print("restart_nemo=nemo -q")
-            return 0
-        if args.command == "install-caja":
-            result = install_caja_integration(
-                config,
-                repo_root=Path(args.repo_root),
-                uv_path=args.uv_path,
-                launcher_command=args.launcher_command,
-                actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
-                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-            )
-            print(f"launcher={result.launcher_path}")
-            print(f"action={result.action_path}")
-            print("restart_caja=caja -q")
-            return 0
-        if args.command == "install-filemanager":
-            manager_name = args.manager
-            if manager_name == "auto":
-                detected = detect_file_manager()
-                if detected is None:
-                    raise RuntimeError("Could not detect a supported file manager. Use --manager nautilus, thunar, nemo, or caja.")
-                manager_name = detected
-            if manager_name == "nautilus":
-                result = install_nautilus_integration(
-                    config,
-                    repo_root=Path(args.repo_root),
-                    uv_path=args.uv_path,
-                    launcher_command=args.launcher_command,
-                    extension_dir=Path(args.extension_dir).expanduser() if args.extension_dir else None,
-                    launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-                )
-                print(f"manager=nautilus")
-                print(f"launcher={result.launcher_path}")
-                print(f"extension={result.extension_path}")
-                print("restart=nautilus -q")
-                return 0
-            if manager_name == "thunar":
-                result = install_thunar_integration(
-                    config,
-                    repo_root=Path(args.repo_root),
-                    uv_path=args.uv_path,
-                    launcher_command=args.launcher_command,
-                    config_path=Path(args.config_path).expanduser() if args.config_path else None,
-                    launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-                )
-                print("manager=thunar")
-                print(f"launcher={result.launcher_path}")
-                print(f"config={result.config_path}")
-                print("restart=thunar -q")
-                return 0
-            if manager_name == "nemo":
-                result = install_nemo_integration(
-                    config,
-                    repo_root=Path(args.repo_root),
-                    uv_path=args.uv_path,
-                    launcher_command=args.launcher_command,
-                    actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
-                    launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-                )
-                print("manager=nemo")
-                print(f"launcher={result.launcher_path}")
-                print(f"action={result.action_path}")
-                print("restart=nemo -q")
-                return 0
-            result = install_caja_integration(
-                config,
-                repo_root=Path(args.repo_root),
-                uv_path=args.uv_path,
-                launcher_command=args.launcher_command,
-                actions_dir=Path(args.actions_dir).expanduser() if args.actions_dir else None,
-                launcher_path=Path(args.launcher_path).expanduser() if args.launcher_path else None,
-            )
-            print("manager=caja")
-            print(f"launcher={result.launcher_path}")
-            print(f"action={result.action_path}")
-            print("restart=caja -q")
-            return 0
         return 1
     finally:
         await manager.close()
@@ -422,3 +629,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return asyncio.run(run(args))
+
+
+def _default_installed_launcher_command() -> str:
+    resolved = shutil.which("cloudbridge")
+    if resolved:
+        return resolved
+    return "cloudbridge"

@@ -26,13 +26,13 @@ class ThunarInstallResult:
 
 @dataclass(slots=True, frozen=True)
 class NemoInstallResult:
-    action_path: Path
+    action_paths: tuple[Path, ...]
     launcher_path: Path
 
 
 @dataclass(slots=True, frozen=True)
 class CajaInstallResult:
-    action_path: Path
+    action_paths: tuple[Path, ...]
     launcher_path: Path
 
 
@@ -55,8 +55,20 @@ def render_launcher_script(config: AppConfig, command: Sequence[str], *, workdir
         "CLOUDBRIDGE_SCAN_CONCURRENCY": str(config.scan_concurrency),
         "CLOUDBRIDGE_SYNC_CONCURRENCY": str(config.sync_concurrency),
     }
+    if config.config_path is not None:
+        exports["CLOUDBRIDGE_CONFIG"] = str(config.config_path)
     if config.yandex_token:
         exports["YANDEX_DISK_TOKEN"] = config.yandex_token
+    if config.yandex_client_id:
+        exports["YANDEX_CLIENT_ID"] = config.yandex_client_id
+    if config.yandex_client_secret:
+        exports["YANDEX_CLIENT_SECRET"] = config.yandex_client_secret
+    if config.nextcloud_url:
+        exports["NEXTCLOUD_URL"] = config.nextcloud_url
+    if config.nextcloud_username:
+        exports["NEXTCLOUD_USERNAME"] = config.nextcloud_username
+    if config.nextcloud_password:
+        exports["NEXTCLOUD_PASSWORD"] = config.nextcloud_password
 
     lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
     for key, value in exports.items():
@@ -67,14 +79,23 @@ def render_launcher_script(config: AppConfig, command: Sequence[str], *, workdir
     return "\n".join(lines) + "\n"
 
 
-def render_nautilus_extension(launcher_path: Path, sync_root: Path) -> str:
+def render_nautilus_extension(launcher_path: Path, sync_root: Path, database_path: Path) -> str:
     return f"""from gi.repository import GObject, Nautilus
 import subprocess
+import sqlite3
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 LAUNCHER = Path({str(launcher_path)!r})
 SYNC_ROOT = Path({str(sync_root)!r}).resolve()
+DATABASE_PATH = Path({str(database_path)!r}).resolve()
+STATUS_EMBLEMS = {{
+    "placeholder": "emblem-downloads",
+    "queued": "emblem-synchronizing",
+    "syncing": "emblem-synchronizing",
+    "error": "emblem-important",
+    "local_only": "emblem-new",
+}}
 
 
 def _uri_to_path(uri):
@@ -92,7 +113,37 @@ def _collapse_paths(paths):
     return tuple(collapsed)
 
 
-class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):
+def _local_to_virtual(path):
+    try:
+        relative = path.relative_to(SYNC_ROOT)
+    except ValueError:
+        return None
+    if not relative.parts:
+        return "/"
+    return "/" + "/".join(relative.parts)
+
+
+def _query_state(path):
+    if not DATABASE_PATH.exists():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{{DATABASE_PATH}}?mode=ro", uri=True, timeout=0.1)
+        connection.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute(
+            "SELECT sync_state, public_url, provider FROM entries WHERE path = ?",
+            (path,),
+        ).fetchone()
+        return row
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+
+class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider, Nautilus.InfoProvider):
     def _selected_paths(self, files, require_sync_root=False):
         paths = []
         for file_info in files:
@@ -112,6 +163,30 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):
             return
         subprocess.Popen([str(LAUNCHER), *args], start_new_session=True)
 
+    def update_file_info(self, file_info):
+        path = _uri_to_path(file_info.get_uri())
+        if path is None:
+            return
+        virtual_path = _local_to_virtual(path)
+        if virtual_path is None:
+            return
+        row = _query_state(virtual_path)
+        if row is None:
+            return
+        sync_state = row["sync_state"]
+        public_url = row["public_url"]
+        provider = row["provider"]
+        emblem = STATUS_EMBLEMS.get(sync_state)
+        if emblem:
+            file_info.add_emblem(emblem)
+        if public_url:
+            file_info.add_emblem("emblem-shared")
+        file_info.add_string_attribute("cloudbridge::sync-state", sync_state)
+        if provider:
+            file_info.add_string_attribute("cloudbridge::provider", provider)
+        if public_url:
+            file_info.add_string_attribute("cloudbridge::public-url", public_url)
+
     def _activate_upload(self, menu, files):
         paths = self._selected_paths(files)
         if not paths:
@@ -129,6 +204,12 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):
         if not paths:
             return
         self._launch("dehydrate", *[str(path) for path in paths])
+
+    def _activate_share(self, menu, files):
+        paths = self._selected_paths(files, require_sync_root=True)
+        if not paths:
+            return
+        self._launch("share-selected", "--copy", *[str(path) for path in paths])
 
     def get_file_items(self, files):
         paths = self._selected_paths(files)
@@ -169,6 +250,14 @@ class CloudBridgeMenuProvider(GObject.GObject, Nautilus.MenuProvider):
             dehydrate_item.connect("activate", self._activate_dehydrate, files)
             submenu.append_item(dehydrate_item)
 
+            share_item = Nautilus.MenuItem(
+                name="CloudBridgeMenuProvider::share",
+                label="Copy Public Link",
+                tip="Create or reuse a public share link and copy it to the clipboard",
+            )
+            share_item.connect("activate", self._activate_share, files)
+            submenu.append_item(share_item)
+
         return (root_item,)
 """
 
@@ -192,17 +281,22 @@ def render_thunar_uca_xml(launcher_path: Path, existing_xml: str | None = None) 
         if marker in description or name.startswith("CloudBridge ") or str(launcher_path) in command:
             root.remove(action)
 
-    action = ElementTree.SubElement(root, "action")
-    ElementTree.SubElement(action, "icon").text = "folder-remote"
-    ElementTree.SubElement(action, "name").text = "CloudBridge Upload to Cloud"
-    ElementTree.SubElement(action, "unique-id").text = "cloudbridge-upload-to-cloud"
-    ElementTree.SubElement(action, "command").text = f"{shlex.quote(str(launcher_path))} upload-selected %F"
-    ElementTree.SubElement(action, "description").text = "Upload selected files to CloudBridge [cloudbridge-managed]"
-    ElementTree.SubElement(action, "patterns").text = "*"
-    ElementTree.SubElement(action, "range").text = "1-*"
-    ElementTree.SubElement(action, "startup-notify")
-    ElementTree.SubElement(action, "directories")
-    ElementTree.SubElement(action, "other-files")
+    _append_thunar_action(
+        root,
+        icon="folder-remote",
+        name="CloudBridge Upload to Cloud",
+        unique_id="cloudbridge-upload-to-cloud",
+        command=f"{shlex.quote(str(launcher_path))} upload-selected %F",
+        description="Upload selected files to CloudBridge [cloudbridge-managed]",
+    )
+    _append_thunar_action(
+        root,
+        icon="emblem-shared",
+        name="CloudBridge Copy Public Link",
+        unique_id="cloudbridge-copy-public-link",
+        command=f"{shlex.quote(str(launcher_path))} share-selected --copy %F",
+        description="Create or reuse a public CloudBridge link [cloudbridge-managed]",
+    )
 
     tree = ElementTree.ElementTree(root)
     ElementTree.indent(tree, space="  ")
@@ -224,6 +318,21 @@ def render_nemo_action(launcher_path: Path) -> str:
     )
 
 
+def render_nemo_share_action(launcher_path: Path) -> str:
+    return (
+        "[Nemo Action]\n"
+        "Active=true\n"
+        "Name=CloudBridge Copy Public Link\n"
+        "Comment=Create or reuse a public CloudBridge link\n"
+        f"Exec={shlex.quote(str(launcher_path))} share-selected --copy %F\n"
+        "Icon-Name=emblem-shared\n"
+        "Selection=notnone\n"
+        "Extensions=any;\n"
+        "Quote=double\n"
+        "EscapeSpaces=true\n"
+    )
+
+
 def render_caja_action_desktop(launcher_path: Path) -> str:
     return (
         "[Desktop Entry]\n"
@@ -238,6 +347,23 @@ def render_caja_action_desktop(launcher_path: Path) -> str:
         "MimeTypes=all/all;\n"
         "SelectionCount=>0\n"
         f"Exec={shlex.quote(str(launcher_path))} upload-selected %F\n"
+    )
+
+
+def render_caja_share_action_desktop(launcher_path: Path) -> str:
+    return (
+        "[Desktop Entry]\n"
+        "Type=Action\n"
+        "Name=CloudBridge Copy Public Link\n"
+        "Tooltip=Create or reuse a public CloudBridge link\n"
+        "Icon=emblem-shared\n"
+        "Profiles=profile-zero;\n"
+        "\n"
+        "[X-Action-Profile profile-zero]\n"
+        "Name=Default profile\n"
+        "MimeTypes=all/all;\n"
+        "SelectionCount=>0\n"
+        f"Exec={shlex.quote(str(launcher_path))} share-selected --copy %F\n"
     )
 
 
@@ -308,8 +434,7 @@ def install_nautilus_integration(
     extension_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> NautilusInstallResult:
-    if config.provider_name == "yandex" and not config.yandex_token:
-        raise ValueError("YANDEX_DISK_TOKEN is required to install Nautilus integration for the Yandex provider.")
+    _validate_provider_credentials(config, "install Nautilus integration")
 
     command, workdir = _resolve_launcher_runtime(
         repo_root=repo_root,
@@ -324,7 +449,14 @@ def install_nautilus_integration(
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
     launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
-    extension_path.write_text(render_nautilus_extension(launcher_path.resolve(), config.sync_root.resolve()), encoding="utf-8")
+    extension_path.write_text(
+        render_nautilus_extension(
+            launcher_path.resolve(),
+            config.sync_root.resolve(),
+            config.database_path.resolve(),
+        ),
+        encoding="utf-8",
+    )
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
     extension_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
@@ -344,8 +476,7 @@ def install_thunar_integration(
     config_path: Path | None = None,
     launcher_path: Path | None = None,
 ) -> ThunarInstallResult:
-    if config.provider_name == "yandex" and not config.yandex_token:
-        raise ValueError("YANDEX_DISK_TOKEN is required to install Thunar integration for the Yandex provider.")
+    _validate_provider_credentials(config, "install Thunar integration")
 
     command, workdir = _resolve_launcher_runtime(
         repo_root=repo_root,
@@ -380,8 +511,7 @@ def install_nemo_integration(
     actions_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> NemoInstallResult:
-    if config.provider_name == "yandex" and not config.yandex_token:
-        raise ValueError("YANDEX_DISK_TOKEN is required to install Nemo integration for the Yandex provider.")
+    _validate_provider_credentials(config, "install Nemo integration")
 
     command, workdir = _resolve_launcher_runtime(
         repo_root=repo_root,
@@ -390,19 +520,22 @@ def install_nemo_integration(
     )
     actions_dir = (actions_dir or Path.home() / ".local" / "share" / "nemo" / "actions").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-nemo").expanduser()
-    action_path = actions_dir / "cloudbridge-upload.nemo_action"
+    upload_action_path = actions_dir / "cloudbridge-upload.nemo_action"
+    share_action_path = actions_dir / "cloudbridge-share.nemo_action"
 
     actions_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
     launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
-    action_path.write_text(render_nemo_action(launcher_path.resolve()), encoding="utf-8")
+    upload_action_path.write_text(render_nemo_action(launcher_path.resolve()), encoding="utf-8")
+    share_action_path.write_text(render_nemo_share_action(launcher_path.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    upload_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    share_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
     return NemoInstallResult(
-        action_path=action_path.resolve(),
+        action_paths=(upload_action_path.resolve(), share_action_path.resolve()),
         launcher_path=launcher_path.resolve(),
     )
 
@@ -416,8 +549,7 @@ def install_caja_integration(
     actions_dir: Path | None = None,
     launcher_path: Path | None = None,
 ) -> CajaInstallResult:
-    if config.provider_name == "yandex" and not config.yandex_token:
-        raise ValueError("YANDEX_DISK_TOKEN is required to install Caja integration for the Yandex provider.")
+    _validate_provider_credentials(config, "install Caja integration")
 
     command, workdir = _resolve_launcher_runtime(
         repo_root=repo_root,
@@ -426,19 +558,22 @@ def install_caja_integration(
     )
     actions_dir = (actions_dir or Path.home() / ".local" / "share" / "file-manager" / "actions").expanduser()
     launcher_path = (launcher_path or config.app_home / "bin" / "cloudbridge-caja").expanduser()
-    action_path = actions_dir / "cloudbridge-upload.desktop"
+    upload_action_path = actions_dir / "cloudbridge-upload.desktop"
+    share_action_path = actions_dir / "cloudbridge-share.desktop"
 
     actions_dir.mkdir(parents=True, exist_ok=True)
     launcher_path.parent.mkdir(parents=True, exist_ok=True)
 
     launcher_path.write_text(render_launcher_script(config, command, workdir=workdir), encoding="utf-8")
-    action_path.write_text(render_caja_action_desktop(launcher_path.resolve()), encoding="utf-8")
+    upload_action_path.write_text(render_caja_action_desktop(launcher_path.resolve()), encoding="utf-8")
+    share_action_path.write_text(render_caja_share_action_desktop(launcher_path.resolve()), encoding="utf-8")
 
     launcher_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    upload_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    share_action_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
     return CajaInstallResult(
-        action_path=action_path.resolve(),
+        action_paths=(upload_action_path.resolve(), share_action_path.resolve()),
         launcher_path=launcher_path.resolve(),
     )
 
@@ -455,8 +590,7 @@ def install_systemd_user_service(
     poll_interval: float = 2.0,
     refresh_interval: float = 30.0,
 ) -> ServiceInstallResult:
-    if config.provider_name == "yandex" and not config.yandex_token:
-        raise ValueError("YANDEX_DISK_TOKEN is required to install the CloudBridge service for the Yandex provider.")
+    _validate_provider_credentials(config, "install the CloudBridge service")
 
     command, workdir = _resolve_launcher_runtime(
         repo_root=repo_root,
@@ -511,3 +645,38 @@ def detect_file_manager() -> str | None:
     if shutil.which("thunar"):
         return "thunar"
     return None
+
+
+def _validate_provider_credentials(config: AppConfig, action: str) -> None:
+    if config.provider_name == "yandex":
+        if config.yandex_token:
+            return
+        raise ValueError(f"YANDEX_DISK_TOKEN is required to {action} for the Yandex provider.")
+    if config.provider_name == "nextcloud":
+        if config.nextcloud_url and config.nextcloud_username and config.nextcloud_password:
+            return
+        raise ValueError(
+            f"NEXTCLOUD_URL, NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD are required to {action} for the Nextcloud provider."
+        )
+
+
+def _append_thunar_action(
+    root: ElementTree.Element,
+    *,
+    icon: str,
+    name: str,
+    unique_id: str,
+    command: str,
+    description: str,
+) -> None:
+    action = ElementTree.SubElement(root, "action")
+    ElementTree.SubElement(action, "icon").text = icon
+    ElementTree.SubElement(action, "name").text = name
+    ElementTree.SubElement(action, "unique-id").text = unique_id
+    ElementTree.SubElement(action, "command").text = command
+    ElementTree.SubElement(action, "description").text = description
+    ElementTree.SubElement(action, "patterns").text = "*"
+    ElementTree.SubElement(action, "range").text = "1-*"
+    ElementTree.SubElement(action, "startup-notify")
+    ElementTree.SubElement(action, "directories")
+    ElementTree.SubElement(action, "other-files")

@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 dist/
+.dist/
 build/
 pytest-cache-files-*/
 tmp*/

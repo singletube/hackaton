@@ -37,7 +37,11 @@ class HybridManager:
         if config.provider_name == "yandex":
             return YandexDiskProvider(config.yandex_token or "")
         if config.provider_name == "nextcloud":
-            return NextcloudProvider()
+            return NextcloudProvider(
+                config.nextcloud_url or "",
+                config.nextcloud_username or "",
+                config.nextcloud_password or "",
+            )
         raise ValueError(f"Unsupported provider: {config.provider_name}")
 
     async def close(self) -> None:

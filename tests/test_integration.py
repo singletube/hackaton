@@ -13,9 +13,11 @@ from cloudbridge.integration import (
     install_systemd_user_service,
     install_thunar_integration,
     render_caja_action_desktop,
+    render_caja_share_action_desktop,
     render_launcher_script,
     render_nautilus_extension,
     render_nemo_action,
+    render_nemo_share_action,
     render_systemd_user_service,
     render_thunar_uca_xml,
 )
@@ -28,6 +30,8 @@ def test_render_launcher_script_exports_runtime_environment(tmp_path: Path) -> N
         database_path=tmp_path / "app" / "state.db",
         provider_name="yandex",
         yandex_token="test-token",
+        yandex_client_id="client-id",
+        yandex_client_secret="client-secret",
         watcher_backend="watchdog",
         scan_concurrency=3,
         sync_concurrency=5,
@@ -40,6 +44,8 @@ def test_render_launcher_script_exports_runtime_environment(tmp_path: Path) -> N
     )
 
     assert "export YANDEX_DISK_TOKEN=test-token" in script
+    assert "export YANDEX_CLIENT_ID=client-id" in script
+    assert "export YANDEX_CLIENT_SECRET=client-secret" in script
     assert "export CLOUDBRIDGE_IMPORT_ROOT=/" in script
     assert "export CLOUDBRIDGE_IMPORT_LAYOUT=flat" in script
     assert "export CLOUDBRIDGE_SYNC_ROOT=" in script
@@ -65,6 +71,27 @@ def test_render_launcher_script_supports_installed_command(tmp_path: Path) -> No
     assert "exec /opt/cloudbridge/bin/cloudbridge \"$@\"" in script
 
 
+def test_render_launcher_script_exports_nextcloud_credentials(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="nextcloud",
+        yandex_token=None,
+        nextcloud_url="https://cloud.example.test",
+        nextcloud_username="alice",
+        nextcloud_password="secret",
+        config_path=tmp_path / "app" / "config.json",
+    )
+
+    script = render_launcher_script(config, ["/opt/cloudbridge/bin/cloudbridge"])
+
+    assert "export CLOUDBRIDGE_CONFIG=" in script
+    assert "export NEXTCLOUD_URL=https://cloud.example.test" in script
+    assert "export NEXTCLOUD_USERNAME=alice" in script
+    assert "export NEXTCLOUD_PASSWORD=secret" in script
+
+
 def test_render_systemd_user_service_binds_daemon_command(tmp_path: Path) -> None:
     content = render_systemd_user_service(
         tmp_path / "cloudbridge-service",
@@ -80,12 +107,16 @@ def test_render_systemd_user_service_binds_daemon_command(tmp_path: Path) -> Non
 
 
 def test_render_nautilus_extension_binds_launcher_and_actions(tmp_path: Path) -> None:
-    content = render_nautilus_extension(tmp_path / "cloudbridge-nautilus", tmp_path / "mirror")
+    content = render_nautilus_extension(tmp_path / "cloudbridge-nautilus", tmp_path / "mirror", tmp_path / "state.db")
 
     assert "\"upload-selected\"" in content
+    assert "Nautilus.InfoProvider" in content
+    assert "DATABASE_PATH =" in content
+    assert "cloudbridge::sync-state" in content
     assert "label=\"Upload to Cloud\"" in content
     assert "label=\"Download from Cloud\"" in content
     assert "label=\"Free Local Space\"" in content
+    assert "label=\"Copy Public Link\"" in content
 
 
 def test_render_thunar_uca_xml_binds_upload_action(tmp_path: Path) -> None:
@@ -93,6 +124,8 @@ def test_render_thunar_uca_xml_binds_upload_action(tmp_path: Path) -> None:
 
     assert "<name>CloudBridge Upload to Cloud</name>" in content
     assert "upload-selected %F" in content
+    assert "<name>CloudBridge Copy Public Link</name>" in content
+    assert "share-selected --copy %F" in content
     assert "cloudbridge-managed" in content
 
 
@@ -104,12 +137,28 @@ def test_render_nemo_action_binds_upload_action(tmp_path: Path) -> None:
     assert "Selection=notnone" in content
 
 
+def test_render_nemo_share_action_binds_share_action(tmp_path: Path) -> None:
+    content = render_nemo_share_action(tmp_path / "cloudbridge-nemo")
+
+    assert "[Nemo Action]" in content
+    assert "share-selected --copy %F" in content
+    assert "Copy Public Link" in content
+
+
 def test_render_caja_action_desktop_binds_upload_action(tmp_path: Path) -> None:
     content = render_caja_action_desktop(tmp_path / "cloudbridge-caja")
 
     assert "[Desktop Entry]" in content
     assert "Type=Action" in content
     assert "upload-selected %F" in content
+
+
+def test_render_caja_share_action_desktop_binds_share_action(tmp_path: Path) -> None:
+    content = render_caja_share_action_desktop(tmp_path / "cloudbridge-caja")
+
+    assert "[Desktop Entry]" in content
+    assert "Type=Action" in content
+    assert "share-selected --copy %F" in content
 
 
 def test_install_nautilus_integration_writes_files(tmp_path: Path) -> None:
@@ -246,9 +295,11 @@ def test_install_nemo_integration_writes_files(tmp_path: Path) -> None:
     )
 
     assert result.launcher_path.exists()
-    assert result.action_path.exists()
+    assert len(result.action_paths) == 2
+    assert all(path.exists() for path in result.action_paths)
     assert "CLOUDBRIDGE_IMPORT_ROOT" in result.launcher_path.read_text(encoding="utf-8")
-    assert "upload-selected %F" in result.action_path.read_text(encoding="utf-8")
+    assert any("upload-selected %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
+    assert any("share-selected --copy %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
 
 
 def test_install_caja_integration_writes_files(tmp_path: Path) -> None:
@@ -272,9 +323,11 @@ def test_install_caja_integration_writes_files(tmp_path: Path) -> None:
     )
 
     assert result.launcher_path.exists()
-    assert result.action_path.exists()
+    assert len(result.action_paths) == 2
+    assert all(path.exists() for path in result.action_paths)
     assert "CLOUDBRIDGE_IMPORT_ROOT" in result.launcher_path.read_text(encoding="utf-8")
-    assert "upload-selected %F" in result.action_path.read_text(encoding="utf-8")
+    assert any("upload-selected %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
+    assert any("share-selected --copy %F" in path.read_text(encoding="utf-8") for path in result.action_paths)
 
 
 def test_install_nautilus_integration_requires_token_for_yandex(tmp_path: Path) -> None:
@@ -285,6 +338,22 @@ def test_install_nautilus_integration_requires_token_for_yandex(tmp_path: Path) 
         provider_name="yandex",
         yandex_token=None,
         watcher_backend="watchdog",
+    )
+
+    with pytest.raises(ValueError):
+        install_nautilus_integration(config, repo_root=tmp_path / "repo", uv_path="/snap/bin/uv")
+
+
+def test_install_nautilus_integration_requires_credentials_for_nextcloud(tmp_path: Path) -> None:
+    config = AppConfig(
+        app_home=tmp_path / "app",
+        sync_root=tmp_path / "mirror",
+        database_path=tmp_path / "app" / "state.db",
+        provider_name="nextcloud",
+        yandex_token=None,
+        nextcloud_url="https://cloud.example.test",
+        nextcloud_username=None,
+        nextcloud_password=None,
     )
 
     with pytest.raises(ValueError):
