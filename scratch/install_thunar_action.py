@@ -7,8 +7,6 @@ from pathlib import Path
 OPEN_ACTION_NAME = "Open with CloudBridge"
 STORE_LOCAL_ACTION_NAME = "Store Locally"
 RESTORE_CLOUD_ACTION_NAME = "Restore to Cloud"
-SHARE_READ_ACTION_NAME = "Create Read-only Link"
-LEGACY_SHARE_EDIT_ACTION_NAME = "Create Editable Link"
 
 
 def _indent(element, level=0):
@@ -39,21 +37,15 @@ def _load_or_create(path: Path):
 def _remove_existing(root):
     for action in list(root.findall("action")):
         name = action.findtext("name")
-        if name in {
-            OPEN_ACTION_NAME,
-            STORE_LOCAL_ACTION_NAME,
-            RESTORE_CLOUD_ACTION_NAME,
-            SHARE_READ_ACTION_NAME,
-            LEGACY_SHARE_EDIT_ACTION_NAME,
-        }:
+        if name in {OPEN_ACTION_NAME, STORE_LOCAL_ACTION_NAME, RESTORE_CLOUD_ACTION_NAME}:
             root.remove(action)
 
 
-def _add_action(root, name: str, command: str, description: str, icon: str, submenu: str):
+def _add_action(root, name: str, command: str, description: str, icon: str):
     action = ET.SubElement(root, "action")
     ET.SubElement(action, "icon").text = icon
     ET.SubElement(action, "name").text = name
-    ET.SubElement(action, "submenu").text = submenu
+    ET.SubElement(action, "submenu").text = ""
     ET.SubElement(action, "unique-id").text = name.lower().replace(" ", "-")
     ET.SubElement(action, "command").text = command
     ET.SubElement(action, "description").text = description
@@ -65,16 +57,6 @@ def _add_action(root, name: str, command: str, description: str, icon: str, subm
     ET.SubElement(action, "other-files").text = "TRUE"
     ET.SubElement(action, "text-files").text = "TRUE"
     ET.SubElement(action, "video-files").text = "TRUE"
-
-
-def _background_command(project_dir: Path, env_setup: str, command: str) -> str:
-    return (
-        "bash -lc "
-        f"'mkdir -p \"$HOME/.cache/cloudbridge\" && "
-        f"cd {project_dir} && "
-        f"{env_setup}"
-        f"{command} >> \"$HOME/.cache/cloudbridge/actions.log\" 2>&1 &'"
-    )
 
 
 def parse_args():
@@ -113,25 +95,25 @@ def main():
             f"export YANDEX_PATH=\"{args.remote_root}\" && "
             f"export LOCAL_PATH=\"{args.local_path}\" && "
         )
-    open_action_command = _background_command(
-        project_dir,
-        env_setup,
-        f"\"{args.python_bin}\" -m src.cloud_open \"%f\"{open_command}",
+    open_action_command = (
+        "exo-open --launch TerminalEmulator bash -lc "
+        f"'cd {project_dir} && "
+        f"{env_setup}"
+        f"\"{args.python_bin}\" -m src.cloud_open \"%f\"{open_command}'"
     )
-    store_local_command = _background_command(
-        project_dir,
-        env_setup,
-        f"\"{args.python_bin}\" -m src.keep_local \"%f\"",
+    store_local_command = (
+        "exo-open --launch TerminalEmulator bash -lc "
+        f"'cd {project_dir} && "
+        f"{env_setup}"
+        f"\"{args.python_bin}\" -m src.keep_local \"%f\"; "
+        "read -r -p \"Press Enter to close...\"'"
     )
-    restore_cloud_command = _background_command(
-        project_dir,
-        env_setup,
-        f"\"{args.python_bin}\" -m src.restore_cloud \"%f\"",
-    )
-    share_read_command = _background_command(
-        project_dir,
-        env_setup,
-        f"\"{args.python_bin}\" -m src.share_link \"%f\"",
+    restore_cloud_command = (
+        "exo-open --launch TerminalEmulator bash -lc "
+        f"'cd {project_dir} && "
+        f"{env_setup}"
+        f"\"{args.python_bin}\" -m src.restore_cloud \"%f\"; "
+        "read -r -p \"Press Enter to close...\"'"
     )
 
     tree, root = _load_or_create(config_path)
@@ -142,7 +124,6 @@ def main():
         open_action_command,
         "Download, open, upload changes, then clean up",
         "folder-cloud",
-        "CloudBridge",
     )
     _add_action(
         root,
@@ -150,7 +131,6 @@ def main():
         store_local_command,
         "Download this file over the placeholder and ignore future uploads",
         "document-save",
-        "CloudBridge",
     )
     _add_action(
         root,
@@ -158,15 +138,6 @@ def main():
         restore_cloud_command,
         "Upload this local file back to Yandex.Disk and replace it with a placeholder",
         "folder-cloud",
-        "CloudBridge",
-    )
-    _add_action(
-        root,
-        SHARE_READ_ACTION_NAME,
-        share_read_command,
-        "Create a read-only Yandex.Disk public link and copy it to clipboard",
-        "emblem-shared",
-        "CloudBridge",
     )
     _indent(root)
     tree.write(config_path, encoding="UTF-8", xml_declaration=True)
@@ -174,7 +145,6 @@ def main():
     print(f"Installed Thunar action: {OPEN_ACTION_NAME}")
     print(f"Installed Thunar action: {STORE_LOCAL_ACTION_NAME}")
     print(f"Installed Thunar action: {RESTORE_CLOUD_ACTION_NAME}")
-    print(f"Installed Thunar action: {SHARE_READ_ACTION_NAME}")
     print(f"Config: {config_path}")
     print("Restart Thunar with: thunar -q")
 

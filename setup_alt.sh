@@ -9,16 +9,16 @@ VENV_DIR="${PROJECT_DIR}/.venv"
 AUTO_YES=0
 
 say() {
-  printf '\n[CloudBridge setup] %s\n' "$*"
+  printf '\n[CloudBridge ALT setup] %s\n' "$*"
 }
 
 warn() {
-  printf '[CloudBridge setup] %s\n' "$*" >&2
+  printf '[CloudBridge ALT setup] %s\n' "$*" >&2
 }
 
 usage() {
   cat <<'EOF'
-Usage: ./setup_kali.sh [options]
+Usage: ./setup_alt.sh [options]
 
 Options:
   -y, --yes                 Auto-confirm package installation prompts
@@ -72,24 +72,23 @@ ask_secret() {
   printf '%s' "$answer"
 }
 
-require_kali_tools() {
-  say "Installing Kali system packages"
+require_alt_tools() {
+  say "Installing ALT Linux system packages"
   local apt_flags=()
   if [[ ${AUTO_YES} -eq 1 ]]; then
     apt_flags+=("-y")
   fi
-  sudo apt update
-  sudo apt install "${apt_flags[@]}" \
+
+  sudo apt-get update
+  sudo apt-get install "${apt_flags[@]}" \
     python3 \
-    python3-pip \
-    python3-venv \
-    python3-dev \
-    python3-pyfuse3 \
+    python3-module-pip \
+    python3-module-pyfuse3 \
+    python3-modules-sqlite3 \
     fuse3 \
-    libfuse3-dev \
+    libfuse3-devel \
     pkg-config \
     thunar \
-    exo-utils \
     xdg-utils \
     mousepad \
     ristretto \
@@ -98,6 +97,12 @@ require_kali_tools() {
 
 create_venv() {
   say "Creating Python virtual environment"
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    warn "python3 -m venv is unavailable on this ALT Linux system"
+    warn "Install the package that provides the venv module and rerun setup_alt.sh"
+    exit 1
+  fi
+
   python3 -m venv --system-site-packages "${VENV_DIR}"
   "${VENV_DIR}/bin/python" -m pip install --upgrade pip
   "${VENV_DIR}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements.txt"
@@ -158,8 +163,18 @@ EOF
   chmod +x "${BIN_DIR}/cloudbridge-open"
 }
 
+check_runtime() {
+  if ! command -v fusermount3 >/dev/null 2>&1; then
+    warn "fusermount3 is not in PATH. FUSE mount may not work until fuse3 is installed correctly."
+  fi
+
+  if [[ -f /etc/fuse.conf ]] && ! grep -Eq '^\s*user_allow_other\s*$' /etc/fuse.conf; then
+    warn "allow_other may require enabling user_allow_other in /etc/fuse.conf"
+  fi
+}
+
 main() {
-  say "CloudBridge first-run setup for Kali"
+  say "CloudBridge first-run setup for ALT Linux"
   parse_args "$@"
   normalize_line_endings
 
@@ -174,11 +189,12 @@ main() {
   remote_root="$(ask "Yandex.Disk folder to sync" "${default_remote}")"
   local_path="$(ask "Local folder shown in Thunar" "${default_local}")"
 
-  require_kali_tools
+  require_alt_tools
   create_venv
   write_config "${token}" "${remote_root}" "${local_path}"
   install_thunar_action "${local_path}" "${remote_root}"
   install_launchers
+  check_runtime
 
   say "Setup complete"
   printf 'Config: %s\n' "${CONFIG_FILE}"
