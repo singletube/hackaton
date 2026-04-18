@@ -1,3 +1,4 @@
+import asyncio
 import aiohttp
 import logging
 from typing import List, AsyncIterator, Optional
@@ -139,6 +140,42 @@ class YandexDiskProvider(StorageProvider):
             if resp.status not in (201, 202):
                 error_data = await resp.json()
                 logger.error("Failed to move %s: %s", src_path, error_data)
+
+    async def get_resource(self, path: str, fields: Optional[str] = None) -> dict:
+        """Gets resource metadata from Yandex.Disk."""
+        session = await self._get_session()
+        params = {"path": path}
+        if fields:
+            params["fields"] = fields
+
+        async with session.get(f"{self.BASE_URL}/resources", params=params) as response:
+            if response.status != 200:
+                try:
+                    error_data = await response.json()
+                except Exception:
+                    error_data = {"status": response.status}
+                raise RuntimeError(f"Failed to get resource {path}: {error_data}")
+            return await response.json()
+
+    async def publish_resource(self, path: str) -> str:
+        """Publishes a resource and returns its public read-only URL."""
+        session = await self._get_session()
+
+        async with session.put(f"{self.BASE_URL}/resources/publish", params={"path": path}) as response:
+            if response.status not in (200, 201, 202):
+                try:
+                    error_data = await response.json()
+                except Exception:
+                    error_data = {"status": response.status}
+                raise RuntimeError(f"Failed to publish {path}: {error_data}")
+
+        for _ in range(5):
+            resource = await self.get_resource(path, fields="public_url")
+            public_url = resource.get("public_url")
+            if public_url:
+                return public_url
+            await asyncio.sleep(0.5)
+        raise RuntimeError(f"Yandex.Disk did not return public_url for {path}")
 
     async def get_all_files_recursive(self, remote_root: str) -> List[CloudItem]:
         """Deep crawl of the remote directory structure."""

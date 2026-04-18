@@ -7,6 +7,8 @@ from pathlib import Path
 OPEN_ACTION_NAME = "Open with CloudBridge"
 STORE_LOCAL_ACTION_NAME = "Store Locally"
 RESTORE_CLOUD_ACTION_NAME = "Restore to Cloud"
+SHARE_READ_ACTION_NAME = "Create Read-only Link"
+LEGACY_SHARE_EDIT_ACTION_NAME = "Create Editable Link"
 
 
 def _indent(element, level=0):
@@ -37,7 +39,13 @@ def _load_or_create(path: Path):
 def _remove_existing(root):
     for action in list(root.findall("action")):
         name = action.findtext("name")
-        if name in {OPEN_ACTION_NAME, STORE_LOCAL_ACTION_NAME, RESTORE_CLOUD_ACTION_NAME}:
+        if name in {
+            OPEN_ACTION_NAME,
+            STORE_LOCAL_ACTION_NAME,
+            RESTORE_CLOUD_ACTION_NAME,
+            SHARE_READ_ACTION_NAME,
+            LEGACY_SHARE_EDIT_ACTION_NAME,
+        }:
             root.remove(action)
 
 
@@ -45,7 +53,7 @@ def _add_action(root, name: str, command: str, description: str, icon: str):
     action = ET.SubElement(root, "action")
     ET.SubElement(action, "icon").text = icon
     ET.SubElement(action, "name").text = name
-    ET.SubElement(action, "submenu").text = ""
+    ET.SubElement(action, "submenu").text = "CloudBridge"
     ET.SubElement(action, "unique-id").text = name.lower().replace(" ", "-")
     ET.SubElement(action, "command").text = command
     ET.SubElement(action, "description").text = description
@@ -115,6 +123,14 @@ def main():
         f"\"{args.python_bin}\" -m src.restore_cloud \"%f\"; "
         "read -r -p \"Press Enter to close...\"'"
     )
+    share_read_command = (
+        "bash -lc "
+        f"'mkdir -p \"$HOME/.cache/cloudbridge\" && "
+        f"cd {project_dir} && "
+        f"{env_setup}"
+        f"\"{args.python_bin}\" -m src.share_link \"%f\" "
+        ">> \"$HOME/.cache/cloudbridge/actions.log\" 2>&1 &'"
+    )
 
     tree, root = _load_or_create(config_path)
     _remove_existing(root)
@@ -139,12 +155,20 @@ def main():
         "Upload this local file back to Yandex.Disk and replace it with a placeholder",
         "folder-cloud",
     )
+    _add_action(
+        root,
+        SHARE_READ_ACTION_NAME,
+        share_read_command,
+        "Create a read-only Yandex.Disk public link and copy it to clipboard",
+        "emblem-shared",
+    )
     _indent(root)
     tree.write(config_path, encoding="UTF-8", xml_declaration=True)
 
     print(f"Installed Thunar action: {OPEN_ACTION_NAME}")
     print(f"Installed Thunar action: {STORE_LOCAL_ACTION_NAME}")
     print(f"Installed Thunar action: {RESTORE_CLOUD_ACTION_NAME}")
+    print(f"Installed Thunar action: {SHARE_READ_ACTION_NAME}")
     print(f"Config: {config_path}")
     print("Restart Thunar with: thunar -q")
 
