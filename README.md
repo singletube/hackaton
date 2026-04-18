@@ -41,7 +41,8 @@ chmod +x setup_kali.sh
 - спросит локальную папку, которая будет видна в Thunar, например `/home/kali/Videos/copypapka`;
 - сохранит конфиг в `~/.config/cloudbridge/env`;
 - настроит контекстное меню Thunar `Open with CloudBridge`;
-- создаст команды `cloudbridge-start` и `cloudbridge-open`.
+- настроит двойной клик по файлам-заглушкам через CloudBridge;
+- создаст команды `cloudbridge-start`, `cloudbridge-open` и `cloudbridge-open-or-default`.
 
 Если после установки команда `cloudbridge-start` не находится, добавь локальные бинарники в `PATH`:
 
@@ -77,6 +78,8 @@ thunar /home/kali/Videos/copypapka
 ```
 
 ### Открытие файлов из облака
+
+После установки 0-байтные файлы-заглушки можно открывать обычным двойным кликом. CloudBridge помечает заглушки extended attribute `user.cloudbridge.remote`, поэтому opener понимает, какой файл нужно скачать с Яндекс.Диска. Для старых заглушек без xattr есть fallback через локальную SQLite-базу.
 
 В Thunar нажми правой кнопкой по файлу-заглушке и выбери:
 

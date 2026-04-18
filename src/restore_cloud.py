@@ -11,6 +11,7 @@ from .core.env_config import load_env_file
 from .core.ignore_list import add_ignored_path, remove_ignored_path
 from .core.models import FileStatus
 from .core.provider.yandex import YandexDiskProvider
+from .core.xattr import set_placeholder_remote_path
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ async def restore_to_cloud(input_path: str):
         print(f"[CloudBridge] replacing local file with placeholder: {local_path}", flush=True)
         with local_path.open("wb") as f:
             f.truncate(0)
+        set_placeholder_remote_path(local_path, remote_path)
 
         try:
             from .core.database import StateDB

@@ -239,8 +239,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     load_env_file()
     args = parse_args()
-    auto_command = args.command == ["auto"]
-    wait_for_enter = args.wait_enter or not args.command or auto_command
+    wait_for_enter = args.wait_enter
     asyncio.run(open_cloud_file(args.remote_path, args.command, wait_for_enter, args.keep_unchanged))
 
 

@@ -8,6 +8,7 @@ from .cloud_open import _normalize_remote_path
 from .core.env_config import load_env_file
 from .core.ignore_list import add_ignored_path
 from .core.provider.yandex import YandexDiskProvider
+from .core.xattr import remove_placeholder_remote_path
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ async def _download_to_path(provider: YandexDiskProvider, remote_path: str, loca
                     bytes_written += len(chunk)
                     f.write(chunk)
         tmp_path.replace(local_path)
+        remove_placeholder_remote_path(local_path)
         print(f"[CloudBridge] stored locally: {local_path} ({bytes_written} bytes)", flush=True)
     except Exception:
         try:

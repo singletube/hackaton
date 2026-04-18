@@ -4,6 +4,7 @@ from typing import List, Optional, AsyncIterator
 from .database import StateDB
 from .provider.base import StorageProvider
 from .models import ItemType, FileStatus, CloudItem
+from .xattr import set_placeholder_remote_path
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ class HybridManager:
             logger.info("De-hydrating (stubbing) local file: %s (cloud size: %d)", local_path, size)
             with open(local_path, "wb") as f:
                 f.truncate(0)
+            set_placeholder_remote_path(local_path, remote_path)
             
             await self.db.update_status(remote_path, FileStatus.OFFLINE, local_path, 
                                       size=size, modified_at=mtime_iso)

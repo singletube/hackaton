@@ -105,10 +105,12 @@ install_packages_kali() {
     python3-venv \
     python3-dev \
     python3-pyfuse3 \
+    attr \
     fuse3 \
     libfuse3-dev \
     pkg-config \
     thunar \
+    desktop-file-utils \
     exo-utils \
     xdg-utils \
     mousepad \
@@ -129,10 +131,12 @@ install_packages_alt() {
     python3-module-pip \
     python3-module-pyfuse3 \
     python3-modules-sqlite3 \
+    attr \
     fuse3 \
     libfuse3-devel \
     pkg-config \
     thunar \
+    desktop-file-utils \
     xdg-utils \
     mousepad \
     ristretto \
@@ -183,6 +187,14 @@ install_filemanager_integration() {
     --python-bin "${VENV_DIR}/bin/python" \
     --editor auto
   thunar -q 2>/dev/null || true
+
+  say "Installing double-click placeholder opener"
+  "${VENV_DIR}/bin/python" "${PROJECT_DIR}/scratch/install_mime_opener.py" \
+    --project-dir "${PROJECT_DIR}" \
+    --env-file "${CONFIG_FILE}" \
+    --python-bin "${VENV_DIR}/bin/python" \
+    --launcher "${BIN_DIR}/cloudbridge-open-or-default"
+  thunar -q 2>/dev/null || true
 }
 
 install_launchers() {
@@ -204,6 +216,15 @@ cd "${PROJECT_DIR}"
 exec "\${CLOUDBRIDGE_PYTHON}" -m src.cloud_open "\$@"
 EOF
   chmod +x "${BIN_DIR}/cloudbridge-open"
+
+  cat > "${BIN_DIR}/cloudbridge-open-or-default" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "${CONFIG_FILE}"
+cd "${PROJECT_DIR}"
+exec "\${CLOUDBRIDGE_PYTHON}" -m src.open_or_default "\$@"
+EOF
+  chmod +x "${BIN_DIR}/cloudbridge-open-or-default"
 }
 
 check_runtime_alt() {
@@ -252,8 +273,8 @@ main() {
 
   create_venv
   write_config "${token}" "${remote_root}" "${local_path}"
-  install_filemanager_integration "${local_path}" "${remote_root}"
   install_launchers
+  install_filemanager_integration "${local_path}" "${remote_root}"
 
   if [[ "${TARGET_OS}" == "alt" ]]; then
     check_runtime_alt
@@ -263,6 +284,7 @@ main() {
   printf 'Target OS: %s\n' "${TARGET_OS}"
   printf 'Config: %s\n' "${CONFIG_FILE}"
   printf 'Context menu: Thunar -> right click a file -> Open with CloudBridge / Store Locally / Restore to Cloud\n'
+  printf 'Double click: placeholder files open through CloudBridge automatically\n'
   printf 'Start watcher/daemon with: cloudbridge-start\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"
 
