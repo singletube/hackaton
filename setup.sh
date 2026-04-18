@@ -167,6 +167,28 @@ install_optional_desktop_packages() {
   fi
 }
 
+install_best_effort_package() {
+  local apt_bin="$1"
+  local package_name="$2"
+  local apt_flags=()
+  if [[ ${AUTO_YES} -eq 1 ]]; then
+    apt_flags+=("-y")
+  fi
+
+  if sudo "${apt_bin}" install "${apt_flags[@]}" "${package_name}"; then
+    say "Installed optional package: ${package_name}"
+  else
+    warn "Optional package ${package_name} was not installed"
+  fi
+}
+
+install_alt_filemanager_packages() {
+  say "Installing optional ALT Linux file manager integration packages"
+  install_best_effort_package apt-get nautilus
+  install_best_effort_package apt-get nautilus-python
+  install_best_effort_package apt-get python3-module-nautilus
+}
+
 create_venv() {
   say "Creating Python virtual environment"
   if ! python3 -m venv --help >/dev/null 2>&1; then
@@ -248,7 +270,7 @@ ensure_user_path() {
   done
 }
 
-install_filemanager_integration() {
+install_thunar_integration() {
   local local_path="$1"
   local remote_root="$2"
 
@@ -261,14 +283,33 @@ install_filemanager_integration() {
     --python-bin "${VENV_DIR}/bin/python" \
     --editor auto
   thunar -q 2>/dev/null || true
+}
 
+install_nautilus_integration() {
+  say "Installing Nautilus context menu extension"
+  "${VENV_DIR}/bin/python" "${PROJECT_DIR}/scratch/install_nautilus_extension.py" \
+    --project-dir "${PROJECT_DIR}" \
+    --python-bin "${VENV_DIR}/bin/python"
+  nautilus -q 2>/dev/null || true
+}
+
+install_mime_opener() {
   say "Installing double-click placeholder opener"
   "${VENV_DIR}/bin/python" "${PROJECT_DIR}/scratch/install_mime_opener.py" \
     --project-dir "${PROJECT_DIR}" \
     --env-file "${CONFIG_FILE}" \
     --python-bin "${VENV_DIR}/bin/python" \
     --launcher "${BIN_DIR}/cloudbridge-open-or-default"
+}
+
+install_filemanager_integrations() {
+  local local_path="$1"
+  local remote_root="$2"
+
   thunar -q 2>/dev/null || true
+  install_thunar_integration "${local_path}" "${remote_root}"
+  install_nautilus_integration
+  install_mime_opener
 }
 
 install_launchers() {
@@ -383,6 +424,7 @@ main() {
       say "CloudBridge first-run setup for ALT Linux"
       install_packages_alt
       install_optional_desktop_packages apt-get
+      install_alt_filemanager_packages
       ;;
     *)
       warn "Unsupported target: ${TARGET_OS}"
@@ -394,7 +436,7 @@ main() {
   write_config "${token}" "${remote_root}" "${local_path}"
   ensure_user_path
   install_launchers
-  install_filemanager_integration "${local_path}" "${remote_root}"
+  install_filemanager_integrations "${local_path}" "${remote_root}"
   enable_fuse_allow_other
 
   if [[ "${TARGET_OS}" == "alt" ]]; then
@@ -404,7 +446,7 @@ main() {
   say "Setup complete"
   printf 'Target OS: %s\n' "${TARGET_OS}"
   printf 'Config: %s\n' "${CONFIG_FILE}"
-  printf 'Context menu: Thunar -> right click a file -> CloudBridge submenu\n'
+  printf 'Context menu: right click a file -> CloudBridge submenu (Thunar/Nautilus)\n'
   printf 'Double click: placeholder files open through CloudBridge automatically\n'
   printf 'Start watcher/daemon with: cloudbridge-start\n'
   printf 'Open folder with: thunar "%s"\n' "${local_path}"

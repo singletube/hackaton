@@ -6,7 +6,7 @@ from typing import List, Optional, AsyncIterator
 from .database import StateDB
 from .provider.base import StorageProvider
 from .models import ItemType, FileStatus, CloudItem
-from .xattr import set_placeholder_remote_path
+from .xattr import get_placeholder_remote_path, set_placeholder_remote_path
 from .ignore_list import is_ignored
 
 logger = logging.getLogger(__name__)
@@ -271,26 +271,30 @@ class HybridManager:
                     skipped += 1
                     continue
                 try:
-                    if os.path.getsize(local_file_path) == 0:
-                        logger.info("Bootstrap: skipping 0-byte local placeholder %s", local_file_path)
-                        skipped += 1
-                        continue
+                    size = os.path.getsize(local_file_path)
                 except OSError as e:
                     logger.warning("Bootstrap: cannot stat %s: %s", local_file_path, e)
                     skipped += 1
                     continue
-                
-                # Check if file exists in DB and is already handled (SYNCED or OFFLINE stub)
-                item = await self.db.get_item(remote_path)
-                already_synced = item and (item['status'] == FileStatus.SYNCED.value or 
-                                          item['status'] == FileStatus.OFFLINE.value)
-                
-                if not already_synced:
-                    logger.info("Bootstrap: uploading new file %s", remote_path)
-                    await self.upload_file(local_file_path, remote_path)
-                    uploaded += 1
-                else:
+
+                is_placeholder = False
+                if size == 0:
+                    placeholder_remote = get_placeholder_remote_path(local_file_path)
+                    item = await self.db.get_item(remote_path)
+                    is_placeholder = bool(placeholder_remote) or (
+                        item is not None and item["status"] == FileStatus.OFFLINE.value
+                    )
+
+                if is_placeholder:
+                    logger.info("Bootstrap: skipping local placeholder %s", local_file_path)
                     skipped += 1
+                    continue
+                
+                # Any real local file should be pushed to cloud on startup and then stubbed locally.
+                # Existing OFFLINE entries represent cloud placeholders and must not block upload.
+                logger.info("Bootstrap: uploading real local file %s", remote_path)
+                await self.upload_file(local_file_path, remote_path)
+                uploaded += 1
 
         logger.info("Bootstrap complete for %s: uploaded=%d skipped=%d", local_root, uploaded, skipped)
 

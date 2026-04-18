@@ -1,14 +1,60 @@
+import importlib
+import os
+import sys
 import traceback
+
+
+def _project_venv_python() -> str | None:
+    project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    candidates = [
+        os.path.join(project_dir, ".venv", "bin", "python"),
+        os.path.join(project_dir, ".venv", "Scripts", "python.exe"),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _ensure_runtime_dependencies():
+    required_modules = ("aiohttp", "aiosqlite", "pyfuse3", "watchdog")
+    missing_module = None
+
+    for module_name in required_modules:
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            missing_module = exc.name or module_name
+            break
+
+    if not missing_module:
+        return
+
+    venv_python = _project_venv_python()
+    if (
+        venv_python
+        and os.path.abspath(sys.executable) != os.path.abspath(venv_python)
+        and os.getenv("CLOUDBRIDGE_REEXEC") != "1"
+    ):
+        os.environ["CLOUDBRIDGE_REEXEC"] = "1"
+        os.execv(venv_python, [venv_python, "-m", "src.main", *sys.argv[1:]])
+
+    raise ModuleNotFoundError(
+        f"Missing Python dependency '{missing_module}'. "
+        f"Run ./setup.sh to create .venv and install requirements, or start via cloudbridge-start."
+    )
+
+
+_ensure_runtime_dependencies()
+
 try:
     import asyncio
     import logging
-    import os
     import signal
     import aiohttp
     import pyfuse3
     import pyfuse3.asyncio
     pyfuse3.asyncio.enable()
-    import sys
     from .core.database import StateDB
     from .core.provider.yandex import YandexDiskProvider
     from .core.manager import HybridManager
@@ -53,8 +99,7 @@ try:
             await provider.create_directory(REMOTE_ROOT)
             await manager.sync_directory(REMOTE_ROOT)
             await manager.materialize_remote_placeholders(MIRROR_DIR)
-            if os.getenv("BOOTSTRAP_LOCAL") == "1":
-                await manager.bootstrap_local_sync(MIRROR_DIR)
+            await manager.bootstrap_local_sync(MIRROR_DIR)
             if os.getenv("PRUNE_REMOTE") == "1":
                 await manager.prune_remote_only_files(MIRROR_DIR)
 
